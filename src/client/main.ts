@@ -68,8 +68,56 @@ function pickAvatar(useCamera: boolean) {
   else avatarFile.removeAttribute('capture');
   avatarFile.click();
 }
-$('avatar-pick').onclick = () => pickAvatar(true);
-$('avatar-selfie').onclick = () => pickAvatar(true);
+
+// Desktop browsers ignore capture= entirely, so laptops get an in-page webcam
+// modal via getUserMedia instead. That API only exists in secure contexts
+// (localhost or HTTPS) — over plain http on a LAN we fall back to the file
+// input, which on phones still reaches the native camera app.
+const camVideo = $('cam-video') as HTMLVideoElement;
+let camStream: MediaStream | null = null;
+
+function closeCameraModal() {
+  camStream?.getTracks().forEach((t) => t.stop());
+  camStream = null;
+  camVideo.srcObject = null;
+  $('camera').classList.add('hidden');
+}
+
+async function takeSelfie() {
+  if (!navigator.mediaDevices?.getUserMedia) return pickAvatar(true);
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 640 } },
+      audio: false,
+    });
+  } catch {
+    // denied or no webcam — let the OS file/camera picker handle it
+    return pickAvatar(true);
+  }
+  camVideo.srcObject = camStream;
+  $('camera').classList.remove('hidden');
+}
+
+$('cam-cancel').onclick = closeCameraModal;
+$('cam-snap').onclick = () => {
+  if (!camVideo.videoWidth) return;
+  const SIZE = 96;
+  const c = document.createElement('canvas');
+  c.width = SIZE;
+  c.height = SIZE;
+  const ctx = c.getContext('2d')!;
+  const s = Math.min(camVideo.videoWidth, camVideo.videoHeight);
+  ctx.translate(SIZE, 0);
+  ctx.scale(-1, 1); // save what the mirrored preview showed
+  ctx.drawImage(camVideo, (camVideo.videoWidth - s) / 2, (camVideo.videoHeight - s) / 2, s, s, 0, 0, SIZE, SIZE);
+  avatarData = c.toDataURL('image/jpeg', 0.75);
+  localStorage.setItem('elevens-avatar', avatarData);
+  updateAvatarPreview();
+  closeCameraModal();
+};
+
+$('avatar-pick').onclick = () => takeSelfie();
+$('avatar-selfie').onclick = () => takeSelfie();
 $('avatar-gallery').onclick = () => pickAvatar(false);
 $('avatar-clear').onclick = () => {
   avatarData = null;

@@ -116,6 +116,16 @@
   }
   #hint.show { opacity: 1; }
 
+  #camera { z-index: 21; }
+  #cam-video {
+    width: min(80vw, 380px);
+    aspect-ratio: 1;
+    object-fit: cover;
+    border-radius: 14px;
+    transform: scaleX(-1); /* mirror preview like a real selfie cam */
+    background: #000;
+  }
+
   #help { z-index: 20; }
   #help .card {
     background: rgba(255,255,255,0.06);
@@ -172,6 +182,15 @@
   </div>
   <button id="how" class="ghost">How to play</button>
   <p id="menu-err" class="err"></p>
+</div>
+
+<div id="camera" class="overlay hidden">
+  <h2>Say cheese</h2>
+  <video id="cam-video" autoplay playsinline muted></video>
+  <div class="row">
+    <button id="cam-snap">📸 Snap</button>
+    <button id="cam-cancel" class="ghost">Cancel</button>
+  </div>
 </div>
 
 <div id="help" class="overlay hidden">
