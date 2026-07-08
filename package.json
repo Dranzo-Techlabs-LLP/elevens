@@ -1,0 +1,24 @@
+{
+  "name": "elevens",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n client,server \"npm:dev:client\" \"npm:dev:server\"",
+    "dev:client": "esbuild src/client/main.ts --bundle --outfile=public/main.js --sourcemap --watch",
+    "dev:server": "tsx watch src/server/index.ts",
+    "build": "esbuild src/client/main.ts --bundle --outfile=public/main.js --minify",
+    "start": "tsx src/server/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "concurrently": "^9.1.0",
+    "esbuild": "^0.24.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
