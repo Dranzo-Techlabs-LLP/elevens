@@ -19,6 +19,7 @@ export interface Entity {
   dir: number; // facing, radians — follows movement direction
   input: { mx: number; my: number; kick: boolean };
   kickHeldMs: number; // >0 while charging a kick; fires on release
+  avatar?: string; // tiny selfie data URL, humans only
 }
 
 export const rooms = new Map<string, Room>();
@@ -83,7 +84,7 @@ export class Room {
   // ---------- membership ----------
 
   /** Returns the new player id, or null if the room is full. */
-  addHuman(ws: WebSocket, name: string): string | null {
+  addHuman(ws: WebSocket, name: string, avatar?: string): string | null {
     const humans = [...this.entities.values()].filter((e) => !e.bot);
 
     if (this.phase === 'lobby') {
@@ -97,12 +98,14 @@ export class Room {
         x: 0, y: 0, vx: 0, vy: 0, dir: team === 'A' ? 0 : Math.PI,
         input: { mx: 0, my: 0, kick: false },
         kickHeldMs: 0,
+        avatar,
       };
       this.entities.set(id, e);
       this.placeAtFormation(e);
       if (!this.hostId) this.hostId = id;
       this.sendTo(e, { type: 'joined', room: this.code, playerId: id, team });
       this.broadcastLobby();
+      this.broadcastAvatars();
       return id;
     }
 
@@ -116,9 +119,11 @@ export class Room {
     slot.bot = false;
     slot.ws = ws;
     slot.name = name;
+    slot.avatar = avatar;
     slot.input = { mx: 0, my: 0, kick: false };
     if (!this.hostId) this.hostId = slot.id;
     this.sendTo(slot, { type: 'joined', room: this.code, playerId: slot.id, team: slot.team });
+    this.broadcastAvatars();
     return slot.id;
   }
 
@@ -135,12 +140,14 @@ export class Room {
       e.ws = null;
       e.name = `Bot (${e.name})`;
       e.input = { mx: 0, my: 0, kick: false };
+      delete e.avatar;
     }
 
     const humans = [...this.entities.values()].filter((p) => !p.bot);
     if (!humans.length) return this.destroy();
     if (this.hostId === id) this.hostId = humans[0].id;
     if (this.phase === 'lobby') this.broadcastLobby();
+    this.broadcastAvatars();
   }
 
   // ---------- messages ----------
@@ -414,6 +421,16 @@ export class Room {
     for (const e of this.entities.values()) {
       if (e.ws && e.ws.readyState === 1) e.ws.send(json);
     }
+  }
+
+  /** Full avatar map to everyone. Sent on membership change only — photos are
+   *  a few KB each, far too big to ride along in the 30Hz state snapshots. */
+  broadcastAvatars() {
+    const avatars: Record<string, string> = {};
+    for (const e of this.entities.values()) {
+      if (e.avatar) avatars[e.id] = e.avatar;
+    }
+    this.broadcastEvent({ type: 'avatars', avatars });
   }
 
   broadcastLobby() {

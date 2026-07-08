@@ -23,8 +23,10 @@ export interface BallSnap {
 }
 
 export type ClientMsg =
-  // room: null = create a new room; otherwise a 4-letter code
-  | { type: 'join'; room: string | null; name: string }
+  // room: null = create a new room; otherwise a 4-letter code.
+  // avatar: optional tiny selfie as a data: URL (client downscales to ~96px
+  // JPEG before sending; server enforces a size cap)
+  | { type: 'join'; room: string | null; name: string; avatar?: string }
   // held input state, last-write-wins on the server. seq is unused for now —
   // it exists so client-side prediction/reconciliation can be added later
   // without a protocol change.
@@ -56,5 +58,8 @@ export type ServerMsg =
       score?: [number, number];
       winner?: Team | 'draw';       // matchEnd
     }
+  // full playerId -> data URL map; re-broadcast whenever membership changes.
+  // Separate from 'state' so photos aren't resent 30x per second.
+  | { type: 'avatars'; avatars: Record<string, string> }
   | { type: 'pong'; t: number } // echo of ping.t
   | { type: 'error'; msg: string };

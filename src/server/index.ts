@@ -75,9 +75,16 @@ wss.on('connection', (ws: AliveWS) => {
     } else if (msg.type === 'join') {
       if (room) return;
       const name = String(msg.name || 'Player').slice(0, 12);
+      // avatar: only accept a small base64 image data URL (client sends ~4KB)
+      const avatar =
+        typeof msg.avatar === 'string' &&
+        /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(msg.avatar) &&
+        msg.avatar.length <= 64_000
+          ? msg.avatar
+          : undefined;
       const target = msg.room ? rooms.get(String(msg.room).toUpperCase().trim()) : Room.create();
       if (!target) return send(ws, { type: 'error', msg: 'Room not found' });
-      const id = target.addHuman(ws, name);
+      const id = target.addHuman(ws, name, avatar);
       if (!id) return send(ws, { type: 'error', msg: 'Room is full' });
       room = target;
       playerId = id;

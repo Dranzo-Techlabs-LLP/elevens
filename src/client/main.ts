@@ -31,11 +31,64 @@ function myName() {
   return n;
 }
 
+// ---------- selfie avatar ----------
+// Photo is downscaled to a 96px center-cropped JPEG data URL (~4KB) BEFORE it
+// leaves the device — the server rejects anything bigger than 64KB.
+const avatarFile = $('avatar-file') as HTMLInputElement;
+let avatarData: string | null = localStorage.getItem('elevens-avatar');
+updateAvatarPreview();
+
+function updateAvatarPreview() {
+  const pick = $('avatar-pick');
+  pick.classList.toggle('set', !!avatarData);
+  pick.style.backgroundImage = avatarData ? `url(${avatarData})` : '';
+  (pick.querySelector('.cam') as HTMLElement).style.display = avatarData ? 'none' : '';
+  $('avatar-clear').classList.toggle('hidden', !avatarData);
+}
+
+async function fileToAvatar(file: Blob): Promise<string> {
+  // createImageBitmap applies EXIF orientation, so phone selfies land upright
+  const bmp = await createImageBitmap(file);
+  const SIZE = 96;
+  const c = document.createElement('canvas');
+  c.width = SIZE;
+  c.height = SIZE;
+  const ctx = c.getContext('2d')!;
+  const s = Math.min(bmp.width, bmp.height); // center-crop to square
+  ctx.drawImage(bmp, (bmp.width - s) / 2, (bmp.height - s) / 2, s, s, 0, 0, SIZE, SIZE);
+  bmp.close();
+  return c.toDataURL('image/jpeg', 0.75);
+}
+
+$('avatar-pick').onclick = () => avatarFile.click();
+$('avatar-clear').onclick = () => {
+  avatarData = null;
+  localStorage.removeItem('elevens-avatar');
+  updateAvatarPreview();
+};
+avatarFile.onchange = async () => {
+  const file = avatarFile.files?.[0];
+  avatarFile.value = '';
+  if (!file) return;
+  try {
+    avatarData = await fileToAvatar(file);
+    localStorage.setItem('elevens-avatar', avatarData);
+    $('menu-err').textContent = '';
+  } catch {
+    $('menu-err').textContent = 'Could not read that image';
+  }
+  updateAvatarPreview();
+};
+
+// other players' photos: raw data URLs (for lobby <img>) + decoded Images (for canvas)
+const avatarUrls: Record<string, string> = {};
+const avatarImgs = new Map<string, HTMLImageElement>();
+
 async function join(room: string | null) {
   $('menu-err').textContent = '';
   try {
     if (!net.connected) await net.connect();
-    net.send({ type: 'join', room, name: myName() });
+    net.send({ type: 'join', room, name: myName(), avatar: avatarData ?? undefined });
   } catch {
     $('menu-err').textContent = 'Could not reach server';
   }
@@ -69,6 +122,31 @@ function showScreen(which: 'menu' | 'lobby' | 'end' | null) {
 }
 
 // ---------- server messages ----------
+type LobbyMsg = Extract<import('../shared/protocol').ServerMsg, { type: 'lobby' }>;
+let lastLobby: LobbyMsg | null = null;
+
+function renderLobby(m: LobbyMsg) {
+  const fill = (team: Team, el: HTMLElement) => {
+    el.innerHTML = '';
+    for (const p of m.players.filter((p) => p.team === team)) {
+      const li = document.createElement('li');
+      if (avatarUrls[p.id]) {
+        const im = document.createElement('img');
+        im.src = avatarUrls[p.id];
+        li.appendChild(im);
+      }
+      li.appendChild(
+        document.createTextNode(p.name + (p.host ? ' ★' : '') + (p.id === playerId ? ' (you)' : '')),
+      );
+      el.appendChild(li);
+    }
+  };
+  fill('A', $('teamA'));
+  fill('B', $('teamB'));
+  $('start').classList.toggle('hidden', !m.youAreHost);
+  $('wait-host').classList.toggle('hidden', m.youAreHost);
+}
+
 let bannerTimer = 0;
 function banner(text: string, ms = 1600) {
   const el = $('banner');
@@ -113,20 +191,26 @@ net.onMsg = (m) => {
       roomCode = m.room;
       $('room-code').textContent = roomCode;
       break;
-    case 'lobby': {
-      const fill = (team: Team, el: HTMLElement) => {
-        el.innerHTML = '';
-        for (const p of m.players.filter((p) => p.team === team)) {
-          const li = document.createElement('li');
-          li.textContent = p.name + (p.host ? ' ★' : '') + (p.id === playerId ? ' (you)' : '');
-          el.appendChild(li);
-        }
-      };
-      fill('A', $('teamA'));
-      fill('B', $('teamB'));
-      $('start').classList.toggle('hidden', !m.youAreHost);
-      $('wait-host').classList.toggle('hidden', m.youAreHost);
+    case 'lobby':
+      lastLobby = m;
+      renderLobby(m);
       if (phase === 'lobby') showScreen('lobby');
+      break;
+    case 'avatars': {
+      for (const [id, url] of Object.entries(m.avatars)) {
+        if (avatarUrls[id] === url) continue;
+        avatarUrls[id] = url;
+        const img = new Image();
+        img.src = url;
+        avatarImgs.set(id, img);
+      }
+      for (const id of [...avatarImgs.keys()]) {
+        if (!m.avatars[id]) {
+          avatarImgs.delete(id);
+          delete avatarUrls[id];
+        }
+      }
+      if (lastLobby && inLobbyUi) renderLobby(lastLobby); // add minis that arrived late
       break;
     }
     case 'state': {
@@ -290,14 +374,38 @@ function drawFrame() {
 
     for (const p of view.players) {
       const me = p.id === playerId;
-      // body
-      g.beginPath();
-      g.arc(p.x, p.y, C.PLAYER_RADIUS, 0, Math.PI * 2);
-      g.fillStyle = TEAM_COLOR[p.team];
-      g.fill();
-      g.lineWidth = me ? 3.5 : 1.5;
-      g.strokeStyle = me ? '#fff' : 'rgba(0,0,0,0.35)';
-      g.stroke();
+      const img = avatarImgs.get(p.id);
+      const hasPic = !!img && img.complete && img.naturalWidth > 0;
+      if (hasPic) {
+        // selfie clipped into the player circle, team color as the ring
+        g.save();
+        g.beginPath();
+        g.arc(p.x, p.y, C.PLAYER_RADIUS, 0, Math.PI * 2);
+        g.clip();
+        g.drawImage(img!, p.x - C.PLAYER_RADIUS, p.y - C.PLAYER_RADIUS, C.PLAYER_RADIUS * 2, C.PLAYER_RADIUS * 2);
+        g.restore();
+        g.beginPath();
+        g.arc(p.x, p.y, C.PLAYER_RADIUS, 0, Math.PI * 2);
+        g.strokeStyle = TEAM_COLOR[p.team];
+        g.lineWidth = 3;
+        g.stroke();
+        if (me) {
+          g.beginPath();
+          g.arc(p.x, p.y, C.PLAYER_RADIUS + 3, 0, Math.PI * 2);
+          g.strokeStyle = '#fff';
+          g.lineWidth = 2;
+          g.stroke();
+        }
+      } else {
+        // no photo: flat team-colored disc
+        g.beginPath();
+        g.arc(p.x, p.y, C.PLAYER_RADIUS, 0, Math.PI * 2);
+        g.fillStyle = TEAM_COLOR[p.team];
+        g.fill();
+        g.lineWidth = me ? 3.5 : 1.5;
+        g.strokeStyle = me ? '#fff' : 'rgba(0,0,0,0.35)';
+        g.stroke();
+      }
       // facing dot
       g.beginPath();
       g.arc(p.x + Math.cos(p.dir) * (C.PLAYER_RADIUS - 4), p.y + Math.sin(p.dir) * (C.PLAYER_RADIUS - 4), 3, 0, Math.PI * 2);
