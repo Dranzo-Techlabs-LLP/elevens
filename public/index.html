@@ -159,7 +159,11 @@
   <h1>ELEVENS</h1>
   <input type="file" id="avatar-file" accept="image/*" hidden>
   <div id="avatar-pick" title="Add a selfie"><span class="cam">📷</span></div>
-  <button id="avatar-clear" class="linkish hidden">remove photo</button>
+  <div class="row">
+    <button id="avatar-selfie" class="linkish">📸 Take selfie</button>
+    <button id="avatar-gallery" class="linkish">🖼 Choose photo</button>
+    <button id="avatar-clear" class="linkish hidden">✕ remove</button>
+  </div>
   <input id="name" placeholder="Your name" maxlength="12" autocomplete="off">
   <button id="create">Create room</button>
   <div class="row">

@@ -60,7 +60,17 @@ async function fileToAvatar(file: Blob): Promise<string> {
   return c.toDataURL('image/jpeg', 0.75);
 }
 
-$('avatar-pick').onclick = () => avatarFile.click();
+// Android 13+'s system photo picker (plain accept="image/*") offers NO camera
+// option, so "take a selfie" must set capture="user" — that launches the
+// front camera app directly. Gallery pick removes the attribute again.
+function pickAvatar(useCamera: boolean) {
+  if (useCamera) avatarFile.setAttribute('capture', 'user');
+  else avatarFile.removeAttribute('capture');
+  avatarFile.click();
+}
+$('avatar-pick').onclick = () => pickAvatar(true);
+$('avatar-selfie').onclick = () => pickAvatar(true);
+$('avatar-gallery').onclick = () => pickAvatar(false);
 $('avatar-clear').onclick = () => {
   avatarData = null;
   localStorage.removeItem('elevens-avatar');
