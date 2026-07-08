@@ -11,6 +11,9 @@ import { Room, rooms } from './room';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.resolve(__dirname, '../../public');
 
+// VPS: run behind a reverse proxy with e.g. `PORT=8080 npm start`
+const PORT = Number(process.env.PORT) || CONFIG.PORT;
+
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript',
@@ -43,9 +46,14 @@ function send(ws: WebSocket, msg: unknown) {
   if (ws.readyState === 1) ws.send(JSON.stringify(msg));
 }
 
-wss.on('connection', (ws) => {
+type AliveWS = WebSocket & { isAlive?: boolean };
+
+wss.on('connection', (ws: AliveWS) => {
   let room: Room | null = null;
   let playerId: string | null = null;
+
+  ws.isAlive = true;
+  ws.on('pong', () => (ws.isAlive = true));
 
   ws.on('message', (raw) => {
     let msg: ClientMsg;
@@ -54,7 +62,9 @@ wss.on('connection', (ws) => {
     } catch {
       return;
     }
-    if (msg.type === 'join') {
+    if (msg.type === 'ping') {
+      send(ws, { type: 'pong', t: msg.t });
+    } else if (msg.type === 'join') {
       if (room) return;
       const name = String(msg.name || 'Player').slice(0, 12);
       const target = msg.room ? rooms.get(String(msg.room).toUpperCase().trim()) : Room.create();
@@ -75,13 +85,27 @@ wss.on('connection', (ws) => {
   });
 });
 
-server.listen(CONFIG.PORT, () => {
+// Reap dead connections: browsers on flaky mobile networks can vanish without
+// a TCP close. Protocol-level ping every 10s; no pong by the next sweep ->
+// terminate, which fires 'close' and hands the player to a bot.
+setInterval(() => {
+  for (const client of wss.clients as Set<AliveWS>) {
+    if (client.isAlive === false) {
+      client.terminate();
+      continue;
+    }
+    client.isAlive = false;
+    client.ping();
+  }
+}, 10_000);
+
+server.listen(PORT, () => {
   const nets = os.networkInterfaces();
   const lan = Object.values(nets)
     .flat()
     .find((n) => n && n.family === 'IPv4' && !n.internal)?.address;
   console.log(`ELEVENS server up:`);
-  console.log(`  local:    http://localhost:${CONFIG.PORT}`);
-  if (lan) console.log(`  phone:    http://${lan}:${CONFIG.PORT}   (same wifi)`);
-  console.log(`  emulator: http://10.0.2.2:${CONFIG.PORT}`);
+  console.log(`  local:    http://localhost:${PORT}`);
+  if (lan) console.log(`  phone:    http://${lan}:${PORT}   (same wifi)`);
+  console.log(`  emulator: http://10.0.2.2:${PORT}`);
 });

@@ -78,6 +78,7 @@ git clone <your-repo> elevens && cd elevens
 npm ci
 npm run build          # minified client bundle
 npm start              # serves everything on :3011
+# or pick a port: PORT=8080 npm start
 ```
 
 Put Caddy in front for free HTTPS (phone browsers behave much better on

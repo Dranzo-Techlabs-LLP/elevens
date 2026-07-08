@@ -51,6 +51,8 @@ $('join').onclick = () => {
   join(code);
 };
 $('start').onclick = () => net.send({ type: 'start' });
+$('how').onclick = () => $('help').classList.remove('hidden');
+$('help-close').onclick = () => $('help').classList.add('hidden');
 $('rematch').onclick = () => {
   net.send({ type: 'rematch' });
   $('rematch-note').textContent = 'Waiting for the others…';
@@ -74,6 +76,26 @@ function banner(text: string, ms = 1600) {
   el.classList.add('show');
   clearTimeout(bannerTimer);
   bannerTimer = window.setTimeout(() => el.classList.remove('show'), ms);
+}
+
+let hintTimer = 0;
+function hint(text: string, ms = 5000) {
+  const el = $('hint');
+  el.textContent = text;
+  el.classList.add('show');
+  clearTimeout(hintTimer);
+  hintTimer = window.setTimeout(() => el.classList.remove('show'), ms);
+}
+
+/** controls reminder, once per browser session, at first kickoff */
+function maybeShowControlsHint() {
+  if (sessionStorage.getItem('elevens-hint')) return;
+  sessionStorage.setItem('elevens-hint', '1');
+  hint(
+    isTouch
+      ? 'Drag left side to move · hold KICK to charge, release to kick'
+      : 'WASD / arrows to move · hold SPACE to charge, release to kick',
+  );
 }
 
 net.onClose = () => {
@@ -114,6 +136,8 @@ net.onMsg = (m) => {
       if (phase === 'lobby' && prev !== 'lobby' && playerId) showScreen('lobby');
       if ((phase === 'playing' || phase === 'goal') && (prev === 'lobby' || prev === 'ended' || inLobbyUi)) {
         showScreen(null);
+        $('help').classList.add('hidden');
+        maybeShowControlsHint();
       }
       if (phase === 'ended' && prev !== 'ended') {
         const [a, b] = m.score;
@@ -132,7 +156,10 @@ net.onMsg = (m) => {
         if (navigator.vibrate) navigator.vibrate(80);
       }
       if (m.kind === 'matchEnd') winner = m.winner ?? null;
-      if (m.kind === 'kickoff') winner = null;
+      if (m.kind === 'kickoff') {
+        winner = null;
+        banner('KICKOFF', 900);
+      }
       break;
     case 'error':
       $('menu-err').textContent = m.msg;
@@ -308,6 +335,14 @@ function drawFrame() {
       g.font = '12px system-ui';
       g.fillStyle = 'rgba(255,255,255,0.6)';
       g.fillText(`room ${roomCode}`, innerWidth / 2, 48);
+
+      // ping readout — green under 80ms, yellow under 150ms, red above
+      if (net.rtt > 0) {
+        g.textAlign = 'left';
+        g.font = '11px system-ui';
+        g.fillStyle = net.rtt < 80 ? '#4ade80' : net.rtt < 150 ? '#facc15' : '#f87171';
+        g.fillText(`${net.rtt} ms`, 10, innerHeight - 10);
+      }
     }
   }
 

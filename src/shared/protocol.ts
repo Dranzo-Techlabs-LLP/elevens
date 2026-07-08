@@ -30,7 +30,8 @@ export type ClientMsg =
   // without a protocol change.
   | { type: 'input'; seq: number; mx: number; my: number; kick: boolean }
   | { type: 'start' }    // host only, from the lobby
-  | { type: 'rematch' }; // vote; majority of humans restarts the match
+  | { type: 'rematch' }  // vote; majority of humans restarts the match
+  | { type: 'ping'; t: number }; // latency probe, t = client timestamp
 
 export type ServerMsg =
   | { type: 'joined'; room: string; playerId: string; team: Team }
@@ -55,4 +56,5 @@ export type ServerMsg =
       score?: [number, number];
       winner?: Team | 'draw';       // matchEnd
     }
+  | { type: 'pong'; t: number } // echo of ping.t
   | { type: 'error'; msg: string };
