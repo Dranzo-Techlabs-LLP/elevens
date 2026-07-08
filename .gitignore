@@ -1,5 +1,7 @@
 node_modules/
 public/main.js
 public/main.js.map
+app.js
 dist/
+.claude/
 .DS_Store

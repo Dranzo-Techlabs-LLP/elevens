@@ -9,10 +9,18 @@ import type { ClientMsg } from '../shared/protocol';
 import { Room, rooms } from './room';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PUBLIC = path.resolve(__dirname, '../../public');
 
-// VPS: run behind a reverse proxy with e.g. `PORT=8080 npm start`
+// Passenger (cPanel/WHM) and most PaaS assign the listen port via $PORT.
+// Fall back to the configured dev port when it's absent.
 const PORT = Number(process.env.PORT) || CONFIG.PORT;
+
+// Resolve the static dir for both layouts: running from source
+// (src/server -> ../../public) and from a bundled app.js at the app root
+// (./public). Pick whichever actually exists.
+const PUBLIC = [
+  path.resolve(__dirname, 'public'),
+  path.resolve(__dirname, '../../public'),
+].find((p) => fs.existsSync(p)) ?? path.resolve(__dirname, '../../public');
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',

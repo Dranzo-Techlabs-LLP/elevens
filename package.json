@@ -2,12 +2,14 @@
   "name": "elevens",
   "private": true,
   "type": "module",
+  "main": "app.js",
   "scripts": {
     "dev": "concurrently -k -n client,server \"npm:dev:client\" \"npm:dev:server\"",
     "dev:client": "esbuild src/client/main.ts --bundle --outfile=public/main.js --sourcemap --watch",
     "dev:server": "tsx watch src/server/index.ts",
-    "build": "esbuild src/client/main.ts --bundle --outfile=public/main.js --minify",
-    "start": "tsx src/server/index.ts",
+    "build": "node build.mjs",
+    "start": "node app.js",
+    "start:dev": "tsx src/server/index.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
