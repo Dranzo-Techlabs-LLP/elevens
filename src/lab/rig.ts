@@ -38,6 +38,8 @@ export class HumanRig {
   private armR: Limb;
   private phase = Math.random() * 6.28;
   private kickT = 0;
+  /** extra body pitch (rad) — slide = throw the body low, stun = slump */
+  extraPitch = 0;
 
   constructor(jerseyColor = 0x2563eb) {
     const jersey = new THREE.MeshStandardMaterial({ color: jerseyColor, roughness: 0.7 });
@@ -169,7 +171,7 @@ export class HumanRig {
 
     // forward lean with speed (+ extra when gassed), bank into turns
     const runFrac = Math.min(1, speed / PLAYER.sprintSpeed);
-    this.lean.rotation.z = -(0.04 + runFrac * 0.22 + (1 - s.stamina) * 0.05);
+    this.lean.rotation.z = -(0.04 + runFrac * 0.22 + (1 - s.stamina) * 0.05) + this.extraPitch;
     this.lean.rotation.x = THREE.MathUtils.clamp(s.yawRate * 0.10, -0.22, 0.22);
     // stride bob (vertical), breathing at rest
     this.lean.position.y =

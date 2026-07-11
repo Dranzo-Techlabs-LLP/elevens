@@ -75,8 +75,12 @@ export function stepBallControl(
     const relSpeed = Math.hypot(relX, relZ);
     const plSpeed = pl.speed;
     const sprinting = plSpeed > 6.5;
+    // closing speed: positive = the ball is coming AT me. A ball rolling
+    // along with its carrier is never "incoming", however fast we both move —
+    // that's a dribble, not a trap.
+    const closing = dist > 1e-4 ? (relX * -dx + relZ * -dz) / dist : 0;
 
-    if (relSpeed > tune.gripSpeed) {
+    if (relSpeed > tune.gripSpeed && closing > 2) {
       // ---- FIRST TOUCH / TRAP ----
       // kill a fraction of the RELATIVE velocity; what survives is the
       // "heaviness" of the touch and runs on physically

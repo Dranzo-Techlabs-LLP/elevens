@@ -87,6 +87,8 @@ export class SimPlayer {
     // small skin gap; lets us slide around posts/players instead of sticking
     this.controller = world.createCharacterController(0.02);
     this.controller.setUp({ x: 0, y: 1, z: 0 });
+    // body contact shoves loose balls physically (blocks, deflections)
+    this.controller.setApplyImpulsesToDynamicBodies(true);
   }
 
   get pos() {

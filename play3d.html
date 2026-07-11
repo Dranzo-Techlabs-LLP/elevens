@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>ELEVENS 3D</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    height: 100%; overflow: hidden; background: #0c1f12;
+    font-family: system-ui, sans-serif;
+    touch-action: none; user-select: none; -webkit-user-select: none;
+  }
+  canvas { display: block; position: fixed; inset: 0; }
+  .overlay {
+    position: fixed; inset: 0; z-index: 10;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; background: rgba(6, 24, 12, 0.9); color: #fff; text-align: center; padding: 20px;
+  }
+  .hidden { display: none !important; }
+  h1 { font-size: 40px; letter-spacing: 6px; }
+  input { font-size: 18px; padding: 10px 14px; border: none; border-radius: 8px; width: 220px; text-align: center; }
+  #code { text-transform: uppercase; width: 120px; }
+  button { font-size: 17px; font-weight: 700; padding: 12px 24px; border: none; border-radius: 10px; background: #22c55e; color: #052e16; cursor: pointer; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .err { color: #fca5a5; min-height: 1.2em; font-size: 14px; }
+  .muted { color: #9fc4aa; font-size: 13px; }
+  .teams { display: flex; gap: 40px; }
+  .teams h3 { margin-bottom: 6px; }
+  .teams .A h3 { color: #60a5fa; } .teams .B h3 { color: #f87171; }
+  .teams li { list-style: none; font-size: 15px; padding: 2px 0; }
+  .card { background: rgba(255,255,255,0.07); border-radius: 12px; padding: 12px 18px; max-width: 480px; font-size: 14px; line-height: 1.55; text-align: left; }
+  kbd { background: rgba(255,255,255,0.16); border-radius: 4px; padding: 1px 6px; font-size: 12px; }
+
+  #hud { position: fixed; top: max(8px, env(safe-area-inset-top)); left: 0; right: 0; text-align: center; color: #fff; z-index: 4; pointer-events: none; text-shadow: 0 1px 6px rgba(0,0,0,0.6); }
+  #hud-score { font-size: 22px; font-weight: 800; }
+  #hud .sub { font-size: 12px; color: rgba(255,255,255,0.75); }
+  #stam-wrap { position: fixed; bottom: max(12px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); width: 140px; height: 8px; background: rgba(0,0,0,0.4); border-radius: 4px; z-index: 4; }
+  #stam { height: 100%; width: 100%; background: #4ade80; border-radius: 4px; }
+
+  #banner { position: fixed; top: 20%; left: 0; right: 0; text-align: center; font-size: 44px; font-weight: 900; color: #fff; text-shadow: 0 2px 12px rgba(0,0,0,0.6); z-index: 5; pointer-events: none; opacity: 0; transition: opacity 0.25s; }
+  #banner.show { opacity: 1; }
+  #hint { position: fixed; bottom: 17%; left: 50%; transform: translateX(-50%); max-width: 92vw; padding: 9px 16px; border-radius: 18px; background: rgba(0,0,0,0.55); color: #fff; font-size: 14px; font-weight: 600; z-index: 5; pointer-events: none; opacity: 0; transition: opacity 0.3s; text-align: center; }
+  #hint.show { opacity: 1; }
+
+  #actions { position: fixed; right: max(12px, env(safe-area-inset-right)); bottom: max(16px, env(safe-area-inset-bottom)); width: 230px; height: 230px; z-index: 6; pointer-events: none; }
+  .abtn { position: absolute; border-radius: 50%; color: #fff; font-weight: 800; display: flex; align-items: center; justify-content: center; pointer-events: auto; border: 2px solid rgba(255,255,255,0.5); text-shadow: 0 1px 3px rgba(0,0,0,0.5); -webkit-tap-highlight-color: transparent; }
+  .abtn.held { filter: brightness(1.45); transform: scale(0.94); }
+  #b-shoot { width: 76px; height: 76px; right: 0; top: 6px; background: rgba(220,38,38,0.55); font-size: 14px; }
+  #b-pass { width: 72px; height: 72px; right: 10px; bottom: 0; background: rgba(34,197,94,0.55); font-size: 13px; }
+  #b-thru { width: 58px; height: 58px; left: 34px; top: 0; background: rgba(168,85,247,0.55); font-size: 12px; }
+  #b-lob { width: 56px; height: 56px; left: 0; top: 66px; background: rgba(59,130,246,0.55); font-size: 12px; }
+  #b-tackle { width: 60px; height: 60px; left: 16px; bottom: 4px; background: rgba(245,158,11,0.6); font-size: 11px; }
+  #b-sprint { width: 54px; height: 54px; right: 96px; bottom: 44px; background: rgba(255,255,255,0.28); font-size: 10px; }
+  #joy-base, #joy-knob { position: fixed; top: 0; left: 0; border-radius: 50%; pointer-events: none; z-index: 5; }
+  #joy-base { width: 104px; height: 104px; border: 2px solid rgba(255,255,255,0.45); }
+  #joy-knob { width: 44px; height: 44px; background: rgba(255,255,255,0.4); }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="menu" class="overlay">
+  <h1>ELEVENS 3D</h1>
+  <p class="muted">5v5 · real physics · Rapier authoritative server</p>
+  <input id="name" placeholder="Your name" maxlength="12" autocomplete="off">
+  <button id="create">Create room</button>
+  <div class="row"><input id="code" placeholder="CODE" maxlength="4"><button id="join">Join</button></div>
+  <div class="card">
+    <b>Move</b> <kbd>WASD</kbd> · <b>Sprint</b> <kbd>SHIFT</kbd> · <b>Shield/Jockey</b> <kbd>E</kbd><br>
+    <b>Pass</b> <kbd>SPACE</kbd>/<kbd>J</kbd> · <b>Through</b> <kbd>I</kbd> · <b>Shoot</b> hold <kbd>K</kbd> · <b>Lob</b> <kbd>L</kbd><br>
+    <b>Tackle</b> <kbd>V</kbd> · <b>Slide</b> <kbd>N</kbd> (foul risk!) · <b>Camera</b> <kbd>C</kbd>
+  </div>
+  <p id="menu-err" class="err"></p>
+</div>
+
+<div id="lobby" class="overlay hidden">
+  <h2>Room <span id="room-code" style="letter-spacing:4px"></span></h2>
+  <p class="muted">Empty slots become bots at kickoff (5v5).</p>
+  <div class="teams">
+    <div class="A"><h3>Team A</h3><ul id="teamA"></ul></div>
+    <div class="B"><h3>Team B</h3><ul id="teamB"></ul></div>
+  </div>
+  <button id="start" class="hidden">Start match</button>
+  <p id="wait-host" class="muted">Waiting for host…</p>
+</div>
+
+<div id="end" class="overlay hidden">
+  <h2 id="result"></h2>
+  <p id="final-score" style="font-size:20px"></p>
+  <button id="rematch">Rematch</button>
+</div>
+
+<div id="hud" class="hidden">
+  <div id="hud-score"></div>
+  <div class="sub"><span id="hud-room"></span></div>
+</div>
+<div id="stam-wrap" class="hidden"><div id="stam"></div></div>
+<div id="banner"></div>
+<div id="hint"></div>
+
+<div id="actions" class="hidden">
+  <div id="b-shoot" class="abtn ui">SHOOT</div>
+  <div id="b-pass" class="abtn ui">PASS</div>
+  <div id="b-thru" class="abtn ui">THRU</div>
+  <div id="b-lob" class="abtn ui">LOB</div>
+  <div id="b-tackle" class="abtn ui">TKL</div>
+  <div id="b-sprint" class="abtn ui">SPR</div>
+</div>
+<div id="joy-base" style="display:none"></div>
+<div id="joy-knob" style="display:none"></div>
+
+<script type="module" src="/src/game3d/main.ts"></script>
+</body>
+</html>

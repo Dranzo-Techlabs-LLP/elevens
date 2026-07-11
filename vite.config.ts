@@ -7,7 +7,7 @@ export default defineConfig({
   server: { port: 5173 },
   build: {
     rollupOptions: {
-      input: { lab: 'lab.html' },
+      input: { lab: 'lab.html', play3d: 'play3d.html' },
     },
     outDir: 'dist-web',
   },

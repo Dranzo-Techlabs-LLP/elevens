@@ -7,6 +7,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { CONFIG } from '../shared/config';
 import type { ClientMsg } from '../shared/protocol';
 import { Room, rooms } from './room';
+import { Room3D, rooms3d } from './room3d';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -58,6 +59,7 @@ type AliveWS = WebSocket & { isAlive?: boolean };
 
 wss.on('connection', (ws: AliveWS) => {
   let room: Room | null = null;
+  let room3d: Room3D | null = null;
   let playerId: string | null = null;
 
   ws.isAlive = true;
@@ -72,6 +74,22 @@ wss.on('connection', (ws: AliveWS) => {
     }
     if (msg.type === 'ping') {
       send(ws, { type: 'pong', t: msg.t });
+    } else if (msg.type === 'join' && (msg as any).mode === '3d') {
+      // 3D sim rooms (Rapier authority) — separate registry from legacy
+      if (room || room3d) return;
+      const name = String(msg.name || 'Player').slice(0, 12);
+      (async () => {
+        const target = (msg as any).room
+          ? rooms3d.get(String((msg as any).room).toUpperCase().trim())
+          : await Room3D.create();
+        if (!target) return send(ws, { type: 'error', msg: 'Room not found' });
+        const id = await target.addHuman(ws, name);
+        if (!id) return send(ws, { type: 'error', msg: 'Room is full' });
+        room3d = target;
+        playerId = id;
+      })();
+    } else if (room3d && playerId) {
+      room3d.onMessage(playerId, msg);
     } else if (msg.type === 'join') {
       if (room) return;
       const name = String(msg.name || 'Player').slice(0, 12);
@@ -95,7 +113,9 @@ wss.on('connection', (ws: AliveWS) => {
 
   ws.on('close', () => {
     if (room && playerId) room.removePlayer(playerId);
+    if (room3d && playerId) room3d.removePlayer(playerId);
     room = null;
+    room3d = null;
     playerId = null;
   });
 });
