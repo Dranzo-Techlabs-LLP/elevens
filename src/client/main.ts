@@ -206,7 +206,7 @@ const settings: Settings = {
   cam: 'broadcast',
   zoom: 1,
   names: true,
-  quality: 'high',
+  quality: isTouch ? 'low' : 'high', // shadow maps on desktop, blobs on phones
   ...JSON.parse(localStorage.getItem('elevens-settings') ?? '{}'),
 };
 
