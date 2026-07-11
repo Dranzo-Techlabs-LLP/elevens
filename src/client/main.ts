@@ -477,6 +477,32 @@ function updateJoystickOverlay() {
   joyKnob.style.transform = `translate(${input.joyBase.x + dx * k - 22}px, ${input.joyBase.y + dy * k - 22}px)`;
 }
 
+// ---------- camera-relative movement ----------
+// Broadcast/overhead cameras are screen-aligned with the world, so raw input
+// maps directly. First/third person cameras ROTATE with the player — there
+// "up" must mean "where I'm looking". We rotate the input by the camera yaw,
+// anchored at the moment the input changes ("gesture-relative"): press D and
+// you turn right once then run straight — no endless spiraling, because the
+// reference doesn't chase the camera while a key is held.
+let moveRefYaw = 0;
+let lastRawMx = 0;
+let lastRawMy = 0;
+
+function worldInput(): { mx: number; my: number } {
+  const camRel = settings.cam === 'first' || settings.cam === 'third';
+  const changed = input.mx !== lastRawMx || input.my !== lastRawMy;
+  if (changed) moveRefYaw = renderer.cameraYaw; // new gesture -> new anchor
+  lastRawMx = input.mx;
+  lastRawMy = input.my;
+  if (!camRel || (!input.mx && !input.my)) return { mx: input.mx, my: input.my };
+  const fx = Math.cos(moveRefYaw), fy = Math.sin(moveRefYaw); // camera forward
+  const rx = -fy, ry = fx; // camera right (world y points down -> +90deg)
+  return {
+    mx: fx * -input.my + rx * input.mx,
+    my: fy * -input.my + ry * input.mx,
+  };
+}
+
 // ---------- main loop ----------
 function tickFrame() {
   input.update();
@@ -485,16 +511,18 @@ function tickFrame() {
   // state can never go stale if a packet is dropped
   const now = performance.now();
   if (playerId && net.connected) {
-    const changed =
-      input.mx !== lastSent.mx || input.my !== lastSent.my || input.kick !== lastSent.kick;
+    const { mx, my } = worldInput();
+    const changed = mx !== lastSent.mx || my !== lastSent.my || input.kick !== lastSent.kick;
     if (changed || now - lastSent.at > 100) {
-      net.send({ type: 'input', seq: seq++, mx: input.mx, my: input.my, kick: input.kick });
-      lastSent = { mx: input.mx, my: input.my, kick: input.kick, at: now };
+      net.send({ type: 'input', seq: seq++, mx, my, kick: input.kick });
+      lastSent = { mx, my, kick: input.kick, at: now };
     }
   }
 
   const sampled = sampleView(now);
   (window as any).__view = sampled?.view; // debug hook (harmless in prod)
+  (window as any).__camYaw = renderer.cameraYaw;
+  (window as any).__refYaw = moveRefYaw;
   // my charge ring uses the LOCAL hold time (zero-latency feel); everyone
   // else's comes from the server snapshot
   const myCharge = input.kick ? Math.min(1, (now - input.kickHeldSince) / C.KICK_CHARGE_MS) : 0;

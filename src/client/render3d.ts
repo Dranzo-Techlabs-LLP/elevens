@@ -233,6 +233,10 @@ export class Renderer3D {
   setCamMode(m: CamMode) {
     this.camMode = m;
   }
+  /** smoothed yaw the follow cams look along — used to make input camera-relative */
+  get cameraYaw() {
+    return this.camYaw;
+  }
   setZoom(z: number) {
     this.zoom = z;
   }
@@ -476,9 +480,10 @@ export class Renderer3D {
         this.camera.lookAt(me!.x + fx * 90, 18, me!.y + fz * 90);
         break;
       case 'first':
-        // eye height, slightly ahead of the head so the body never clips
-        this.camera.position.set(me!.x + fx * 8, 30, me!.y + fz * 8);
-        this.camera.lookAt(me!.x + fx * 130, 20, me!.y + fz * 130);
+        // eye height, slightly ahead of the head so the body never clips;
+        // tilted down enough that the ball at your feet stays in frame
+        this.camera.position.set(me!.x + fx * 8, 32, me!.y + fz * 8);
+        this.camera.lookAt(me!.x + fx * 90, 2, me!.y + fz * 90);
         break;
       case 'overhead':
         // tactical top-down (tiny z offset keeps lookAt from degenerating)
