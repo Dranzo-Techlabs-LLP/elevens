@@ -11,6 +11,8 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import { Pane } from 'tweakpane';
 import Stats from 'stats.js';
 import { BALL, MATCH, PITCH_5S } from '../shared/config3d';
+import { SimPlayer, defaultMoveTune } from '../shared/sim3d/player';
+import { HumanRig } from './rig';
 
 // live-tunable copy of the aero/ball constants (Tweakpane writes here)
 const TUNE = {
@@ -53,12 +55,10 @@ async function boot() {
   mkPost(gx, PITCH_5S.goalHeight / 2, PITCH_5S.goalWidth / 2, PITCH_5S.goalHeight);
   mkPost(gx, PITCH_5S.goalHeight, 0, PITCH_5S.goalWidth, true); // crossbar
 
-  // reference player: static 1.82m capsule at midfield edge (scale check +
-  // something to bounce a driven ball off)
-  const refBody = world.createRigidBody(
-    RAPIER.RigidBodyDesc.fixed().setTranslation(4, 1.82 / 2, 2),
-  );
-  world.createCollider(RAPIER.ColliderDesc.capsule(1.82 / 2 - 0.3, 0.3).setRestitution(0.3), refBody);
+  // M2: CONTROLLED player — kinematic capsule with momentum/turn-radius/
+  // stamina (isomorphic sim code) driven by WASD+Shift
+  const player = new SimPlayer(RAPIER, world, -12, 4);
+  const moveTune = defaultMoveTune();
 
   // the ball
   const ballBody = world.createRigidBody(
@@ -139,14 +139,38 @@ async function boot() {
   bar.position.set(gx, PITCH_5S.goalHeight, 0);
   scene.add(post1, post2, bar);
 
-  // reference player visual (1.82m capsule) — human scale anchor
-  const refMesh = new THREE.Mesh(
-    new THREE.CapsuleGeometry(0.3, 1.82 - 0.6, 6, 12),
-    new THREE.MeshStandardMaterial({ color: 0x2563eb, roughness: 0.7 }),
+  // player visual: procedural human rig (Mixamo GLBs drop in later)
+  const rig = new HumanRig();
+  scene.add(rig.group);
+
+  // breadcrumb trail — SEE the turning radius as an arc on the grass
+  const TRAIL_N = 240;
+  const trailPos = new Float32Array(TRAIL_N * 3);
+  const trailGeo = new THREE.BufferGeometry();
+  trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+  const trail = new THREE.Line(
+    trailGeo,
+    new THREE.LineBasicMaterial({ color: 0xfacc15, transparent: true, opacity: 0.8 }),
   );
-  refMesh.position.set(4, 1.82 / 2, 2);
-  refMesh.castShadow = true;
-  scene.add(refMesh);
+  trail.frustumCulled = false;
+  scene.add(trail);
+  let trailIdx = 0;
+  let trailTimer = 0;
+
+  // WASD + Shift input (world axes: W = +x toward the goal)
+  const keys = new Set<string>();
+  addEventListener('keydown', (e) => keys.add(e.code));
+  addEventListener('keyup', (e) => keys.delete(e.code));
+  function readInput() {
+    let x = 0, z = 0;
+    if (keys.has('KeyW')) x += 1;
+    if (keys.has('KeyS')) x -= 1;
+    if (keys.has('KeyD')) z += 1;
+    if (keys.has('KeyA')) z -= 1;
+    return { x, z, sprint: keys.has('ShiftLeft') || keys.has('ShiftRight') };
+  }
+
+  const camState = { follow: true };
 
   // ball visual
   const ballTexC = document.createElement('canvas');
@@ -298,6 +322,16 @@ async function boot() {
   pane.addBinding(TUNE, 'rollFriction', { min: 0, max: 4, step: 0.05 });
   pane.addBinding(TUNE, 'rollSkid', { min: 0, max: 0.5, step: 0.01 });
 
+  const moveFolder = pane.addFolder({ title: 'Movement feel (live)' });
+  moveFolder.addBinding(moveTune, 'sprintSpeed', { min: 5, max: 11, step: 0.1 });
+  moveFolder.addBinding(moveTune, 'jogSpeed', { min: 2, max: 6, step: 0.1 });
+  moveFolder.addBinding(moveTune, 'accel', { min: 2, max: 10, step: 0.1 });
+  moveFolder.addBinding(moveTune, 'decel', { min: 3, max: 14, step: 0.1 });
+  moveFolder.addBinding(moveTune, 'turnRateWalk', { min: 4, max: 20, step: 0.5 });
+  moveFolder.addBinding(moveTune, 'turnRateSprint', { min: 0.8, max: 6, step: 0.1 });
+  moveFolder.addBinding(moveTune, 'staminaDrainSprint', { min: 0, max: 0.3, step: 0.005 });
+  moveFolder.addBinding(camState, 'follow', { label: 'follow cam' });
+
   const stats = new Stats();
   stats.showPanel(0);
   document.body.appendChild(stats.dom);
@@ -315,6 +349,7 @@ async function boot() {
 
     while (acc >= DT) {
       acc -= DT;
+      player.step(DT, readInput(), moveTune);
       applyAero();
       world.step();
 
@@ -346,11 +381,49 @@ async function boot() {
     ballMesh.position.set(bp.x, bp.y, bp.z);
     ballMesh.quaternion.set(br.x, br.y, br.z, br.w);
 
+    // player rig + trail + telemetry
+    const pp = player.pos;
+    rig.group.position.set(pp.x, 0, pp.z);
+    rig.group.rotation.y = -player.yaw;
+    rig.update(Math.min(0.05, (now - last) / 1000 + DT), {
+      speed: player.speed,
+      yawRate: player.yawRate,
+      stamina: player.stamina,
+    });
+    trailTimer += DT;
+    if (trailTimer > 0.05) {
+      trailTimer = 0;
+      trailPos[trailIdx * 3] = pp.x;
+      trailPos[trailIdx * 3 + 1] = 0.03;
+      trailPos[trailIdx * 3 + 2] = pp.z;
+      trailIdx = (trailIdx + 1) % TRAIL_N;
+      trailGeo.attributes.position.needsUpdate = true;
+    }
+    (window as any).__move = {
+      x: pp.x,
+      z: pp.z,
+      speed: player.speed,
+      stamina: player.stamina,
+      yawRate: player.yawRate,
+    };
+
+    // camera: follow behind travel dir, or free orbit
+    if (camState.follow) {
+      const back = player.speed > 0.5 ? Math.atan2(player.velZ, player.velX) : player.yaw;
+      const tx = pp.x - Math.cos(back) * 7;
+      const tz = pp.z - Math.sin(back) * 7;
+      camera.position.lerp(new THREE.Vector3(tx, 3.6, tz), 0.06);
+      camera.lookAt(pp.x + Math.cos(back) * 4, 0.8, pp.z + Math.sin(back) * 4);
+    } else {
+      controls.update();
+    }
+
     const v = ballBody.linvel();
     const speed = Math.hypot(v.x, v.y, v.z);
-    liveEl.textContent = `ball ${speed.toFixed(1)} m/s (${(speed * 3.6).toFixed(0)} km/h) · h ${(bp.y - BALL.radius).toFixed(2)}m`;
+    liveEl.textContent =
+      `ball ${speed.toFixed(1)} m/s · h ${(bp.y - BALL.radius).toFixed(2)}m — ` +
+      `player ${player.speed.toFixed(1)} m/s · stamina ${(player.stamina * 100).toFixed(0)}%`;
 
-    controls.update();
     renderer.render(scene, camera);
     stats.end();
     requestAnimationFrame(frame);
