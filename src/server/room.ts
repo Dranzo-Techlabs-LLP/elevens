@@ -19,6 +19,7 @@ export interface Entity {
   dir: number; // facing, radians — follows movement direction
   input: { mx: number; my: number; kick: boolean };
   kickHeldMs: number; // >0 while charging a kick; fires on release
+  kickCooldownUntil: number; // tick until which this player can't (re)control the ball
   avatar?: string; // tiny selfie data URL, humans only
 }
 
@@ -46,6 +47,8 @@ export class Room {
   score: [number, number] = [0, 0];
   timeLeft = C.MATCH_SECONDS;
   ball = { x: C.PITCH_W / 2, y: C.PITCH_H / 2, z: 0, vx: 0, vy: 0, vz: 0 };
+  /** id of the player currently carrying/controlling the ball, if any */
+  ownerId: string | null = null;
   tick = 0;
   rematchVotes = new Set<string>();
   private pauseUntilTick = 0;
@@ -98,6 +101,7 @@ export class Room {
         x: 0, y: 0, vx: 0, vy: 0, dir: team === 'A' ? 0 : Math.PI,
         input: { mx: 0, my: 0, kick: false },
         kickHeldMs: 0,
+        kickCooldownUntil: 0,
         avatar,
       };
       this.entities.set(id, e);
@@ -198,6 +202,7 @@ export class Room {
           x: 0, y: 0, vx: 0, vy: 0, dir: team === 'A' ? 0 : Math.PI,
           input: { mx: 0, my: 0, kick: false },
           kickHeldMs: 0,
+          kickCooldownUntil: 0,
         });
         count++;
       }
@@ -216,11 +221,13 @@ export class Room {
   /** Everyone back to formation spots, ball to center, all motion zeroed. */
   private kickoffReset() {
     this.ball = { x: C.PITCH_W / 2, y: C.PITCH_H / 2, z: 0, vx: 0, vy: 0, vz: 0 };
+    this.ownerId = null;
     for (const e of this.entities.values()) {
       this.placeAtFormation(e);
       e.vx = 0;
       e.vy = 0;
       e.kickHeldMs = 0;
+      e.kickCooldownUntil = 0;
       if (e.bot) e.input = { mx: 0, my: 0, kick: false };
     }
   }
@@ -322,6 +329,9 @@ export class Room {
       if (ball.vz < 0) {
         ball.vz = -ball.vz * C.BALL_BOUNCE;
         if (ball.vz < 60) ball.vz = 0; // stop micro-bouncing
+        // grass grabs the ball a little on every landing
+        ball.vx *= 0.85;
+        ball.vy *= 0.85;
       }
     }
     // grass friction only while rolling; light air drag while flying
@@ -358,43 +368,53 @@ export class Room {
       if (ball.x > C.PITCH_W + C.BALL_RADIUS) return this.goal('A');
     }
 
-    // player-ball interaction only while the ball is reachable (low enough)
+    // ---- possession + ball control ----
+    this.updatePossession(list);
+    const owner = this.ownerId ? this.entities.get(this.ownerId) : undefined;
+
     if (ball.z < C.KICKABLE_HEIGHT) {
+      if (owner) {
+        // DRIBBLING: the ball is carried at the feet. A critically-damped
+        // spring (not teleport) keeps it there so motion still looks physical
+        // through the interpolation. Sprinting pushes the ball further ahead
+        // — real knock-on dribbling — walking keeps it glued tight.
+        const speed = Math.hypot(owner.vx, owner.vy);
+        const lead = C.PLAYER_RADIUS + C.BALL_RADIUS + 2 + speed * C.DRIBBLE_LEAD;
+        const tx = owner.x + Math.cos(owner.dir) * lead;
+        const ty = owner.y + Math.sin(owner.dir) * lead;
+        const k = 1 - Math.exp(-C.CARRY_SPRING * DT);
+        ball.x += (tx - ball.x) * k;
+        ball.y += (ty - ball.y) * k;
+        ball.vx = owner.vx;
+        ball.vy = owner.vy;
+        ball.z *= 0.5;
+        ball.vz = 0;
+      }
+
+      // body blocks for everyone else: standing in the ball's path deflects
+      // it — a stationary defender cushions it dead (that's a block/trap),
+      // a moving one knocks it onward
       for (const e of list) {
+        if (e === owner) continue;
         const dx = ball.x - e.x, dy = ball.y - e.y;
         const d = Math.hypot(dx, dy);
         const min = C.PLAYER_RADIUS + C.BALL_RADIUS;
-
-        // hard contact: push the ball out and give it the player's motion
         if (d > 0.0001 && d < min) {
           const nx = dx / d, ny = dy / d;
           ball.x = e.x + nx * min;
           ball.y = e.y + ny * min;
-          ball.vx = e.vx + nx * C.DRIBBLE_PUSH;
-          ball.vy = e.vy + ny * C.DRIBBLE_PUSH;
-        }
-
-        // soft ball control: while running near a slow-moving ball, a gentle
-        // magnet steers it toward a spot just in front of the feet, and the
-        // ball's velocity eases toward the player's. This is what makes
-        // dribbling feel deliberate instead of pinball.
-        const running = Math.hypot(e.vx, e.vy) > 40;
-        const relSpeed = Math.hypot(ball.vx - e.vx, ball.vy - e.vy);
-        if (running && d < C.CONTROL_RADIUS && relSpeed < C.CONTROL_MAX_REL_SPEED) {
-          const reach = C.PLAYER_RADIUS + C.BALL_RADIUS + 3;
-          const tx = e.x + Math.cos(e.dir) * reach;
-          const ty = e.y + Math.sin(e.dir) * reach;
-          ball.vx += (tx - ball.x) * C.DRIBBLE_PULL * DT;
-          ball.vy += (ty - ball.y) * C.DRIBBLE_PULL * DT;
-          const ease = 1 - Math.exp(-3 * DT);
-          ball.vx += (e.vx - ball.vx) * ease;
-          ball.vy += (e.vy - ball.vy) * ease;
+          const rel = Math.hypot(ball.vx - e.vx, ball.vy - e.vy);
+          ball.vx = e.vx + nx * Math.max(C.DRIBBLE_PUSH, rel * 0.3);
+          ball.vy = e.vy + ny * Math.max(C.DRIBBLE_PUSH, rel * 0.3);
         }
       }
     }
 
-    // kicks: charge while the button is held, fire on release.
-    // Charge sets power AND loft — taps stay on the deck, full charge lofts.
+    // ---- kicks ----
+    // One button, charge picks the ball type:
+    //   tap        -> short ground pass
+    //   half hold  -> driven long pass (low, fast, tiny hop)
+    //   full hold  -> lofted long ball / shot (clears heads, drops in the box)
     for (const e of list) {
       if (e.input.kick) {
         e.kickHeldMs += DT * 1000;
@@ -404,13 +424,75 @@ export class Room {
         const t = Math.min(1, e.kickHeldMs / C.KICK_CHARGE_MS);
         e.kickHeldMs = 0;
         const d = Math.hypot(ball.x - e.x, ball.y - e.y);
-        if (d <= C.KICK_RADIUS && ball.z < C.KICKABLE_HEIGHT) {
+        const canKick = (owner === e || d <= C.KICK_RADIUS) && ball.z < C.KICKABLE_HEIGHT;
+        if (canKick) {
           const power = C.KICK_MIN + (C.KICK_MAX - C.KICK_MIN) * t;
+          // loft ramps in smoothly only past mid-charge (smoothstep), so
+          // passes stay playable on the deck and only committed holds loft
+          const s = Math.min(1, Math.max(0, (t - C.KICK_LIFT_RAMP0) / (C.KICK_LIFT_RAMP1 - C.KICK_LIFT_RAMP0)));
+          const lift = C.KICK_LIFT_BASE + C.KICK_LIFT_RANGE * s * s * (3 - 2 * s);
           ball.vx = Math.cos(e.dir) * power;
           ball.vy = Math.sin(e.dir) * power;
-          ball.vz = power * (C.KICK_LIFT_MIN + (C.KICK_LIFT_MAX - C.KICK_LIFT_MIN) * t);
+          ball.vz = power * lift;
+          // release + cooldown so the ball actually leaves the foot instead
+          // of being instantly re-captured by the kicker
+          if (this.ownerId === e.id) this.ownerId = null;
+          e.kickCooldownUntil = this.tick + C.KICK_COOLDOWN_TICKS;
         }
       }
+    }
+  }
+
+  /**
+   * Decides who (if anyone) controls the ball this tick.
+   *  - possession needs the ball low, close, and not flying past (a fast
+   *    arriving ball gets CUSHIONED — a first touch — and is controllable
+   *    next tick once slowed)
+   *  - the current owner keeps it unless a challenger is clearly closer
+   *    (STEAL_RATIO hysteresis stops two players flickering ownership)
+   *  - players who just kicked are ineligible until their cooldown expires
+   */
+  private updatePossession(list: Entity[]) {
+    const ball = this.ball;
+    if (ball.z >= C.KICKABLE_HEIGHT) {
+      this.ownerId = null;
+      return;
+    }
+    const eligible = (e: Entity) => this.tick >= e.kickCooldownUntil;
+    const distTo = (e: Entity) => Math.hypot(ball.x - e.x, ball.y - e.y);
+
+    let owner = this.ownerId ? this.entities.get(this.ownerId) : undefined;
+    if (owner && (!eligible(owner) || distTo(owner) > C.CONTROL_RADIUS * 1.2)) owner = undefined;
+
+    let nearest: Entity | undefined;
+    let nearestD = Infinity;
+    for (const e of list) {
+      if (!eligible(e)) continue;
+      const d = distTo(e);
+      if (d < C.CONTROL_RADIUS && d < nearestD) {
+        nearest = e;
+        nearestD = d;
+      }
+    }
+
+    if (!owner) {
+      if (nearest) {
+        const rel = Math.hypot(ball.vx - nearest.vx, ball.vy - nearest.vy);
+        if (rel > C.CONTROL_MAX_REL_SPEED) {
+          // first touch: kill most of the ball's speed, control it next tick
+          ball.vx = nearest.vx + (ball.vx - nearest.vx) * C.TRAP_DAMP;
+          ball.vy = nearest.vy + (ball.vy - nearest.vy) * C.TRAP_DAMP;
+          this.ownerId = null;
+        } else {
+          this.ownerId = nearest.id;
+        }
+      } else {
+        this.ownerId = null;
+      }
+    } else if (nearest && nearest !== owner && nearestD < distTo(owner) * C.STEAL_RATIO) {
+      this.ownerId = nearest.id; // tackle: clearly closer challenger takes it
+    } else {
+      this.ownerId = owner.id;
     }
   }
 

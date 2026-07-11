@@ -329,12 +329,11 @@ export class Renderer3D {
     };
     const MARGIN = 70;
     const cx = C.PITCH_W / 2, cy = C.PITCH_H / 2;
-    // touchline stands (top & bottom)
+    // far touchline only — the camera films from the near side, and a stand
+    // there would block the view whenever play reaches the near corners
     const s1 = mkStand(C.PITCH_W + 200, 100);
     s1.position.set(cx, 0, -MARGIN);
     s1.rotation.y = Math.PI; // faces the pitch
-    const s2 = mkStand(C.PITCH_W + 200, 100);
-    s2.position.set(cx, 0, C.PITCH_H + MARGIN);
     // end stands
     const s3 = mkStand(C.PITCH_H + 60, 100);
     s3.position.set(-MARGIN - 40, 0, cy);
@@ -342,7 +341,7 @@ export class Renderer3D {
     const s4 = mkStand(C.PITCH_H + 60, 100);
     s4.position.set(C.PITCH_W + MARGIN + 40, 0, cy);
     s4.rotation.y = Math.PI / 2;
-    this.scene.add(s1, s2, s3, s4);
+    this.scene.add(s1, s3, s4);
   }
 
   private buildFloodlights() {

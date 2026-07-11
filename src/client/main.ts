@@ -231,8 +231,8 @@ function maybeShowControlsHint() {
   sessionStorage.setItem('elevens-hint', '1');
   hint(
     isTouch
-      ? 'Drag left side to move · hold KICK to charge, release to kick'
-      : 'WASD / arrows to move · hold SPACE to charge, release to kick',
+      ? 'Drag left side to move · KICK: tap = pass, half hold = long pass, full = loft'
+      : 'WASD to move · SPACE: tap = pass, half hold = long pass, full = loft',
   );
 }
 
@@ -414,6 +414,7 @@ function tickFrame() {
   }
 
   const sampled = sampleView(now);
+  (window as any).__view = sampled?.view; // debug hook (harmless in prod)
   // my charge ring uses the LOCAL hold time (zero-latency feel); everyone
   // else's comes from the server snapshot
   const myCharge = input.kick ? Math.min(1, (now - input.kickHeldSince) / C.KICK_CHARGE_MS) : 0;

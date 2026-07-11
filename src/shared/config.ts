@@ -34,19 +34,28 @@ export const CONFIG = {
   WALL_BOUNCE: 0.65,       // energy kept when bouncing off walls
   DRIBBLE_PUSH: 60,        // extra nudge the ball gets when a player touches it
 
-  // --- ball control (dribbling feel) ---
-  CONTROL_RADIUS: 42,      // soft magnet range while running with the ball
-  DRIBBLE_PULL: 9,         // magnet strength pulling ball in front of feet
-  CONTROL_MAX_REL_SPEED: 280, // magnet only grips if ball isn't flying past
+  // --- ball control / possession ---
+  CONTROL_RADIUS: 44,      // within this of the ball = can take possession
+  CONTROL_MAX_REL_SPEED: 300, // faster incoming ball must be trapped first
+  TRAP_DAMP: 0.35,         // first touch keeps this fraction of ball speed
+  CARRY_SPRING: 12,        // how snappily the carried ball sticks to the feet
+  DRIBBLE_LEAD: 0.045,     // extra lead per unit of speed (sprint = knock-ons)
+  STEAL_RATIO: 0.75,       // challenger must be this fraction closer to steal
   KICKABLE_HEIGHT: 55,     // ball above this is out of reach (no kick/touch)
+  KICK_COOLDOWN_TICKS: 8,  // after kicking, can't re-control (~270ms @30Hz)
 
-  // --- kicking (one button: tap = low pass, hold = lofted shot) ---
-  KICK_RADIUS: 34,         // ball must be within this of player center
-  KICK_MIN: 330,           // ball speed for an instant tap
-  KICK_MAX: 760,           // ball speed at full charge
+  // --- kicking (one button, charge picks the ball type) ---
+  // tap        -> short ground pass
+  // half hold  -> driven long pass, low skimmer
+  // full hold  -> lofted long ball / shot
+  KICK_RADIUS: 36,         // ball must be within this of player center
+  KICK_MIN: 340,           // ball speed for an instant tap
+  KICK_MAX: 800,           // ball speed at full charge
   KICK_CHARGE_MS: 800,     // hold duration for full charge
-  KICK_LIFT_MIN: 0.05,     // tap: ball stays on the deck
-  KICK_LIFT_MAX: 0.5,      // full charge: proper lofted ball
+  KICK_LIFT_BASE: 0.04,    // loft at low charge (stays on the deck)
+  KICK_LIFT_RANGE: 0.42,   // extra loft gained across the ramp below
+  KICK_LIFT_RAMP0: 0.45,   // charge where loft starts ramping in
+  KICK_LIFT_RAMP1: 0.95,   // charge where loft is maxed
 
   // --- goal frame ---
   GOAL_HEIGHT: 110,        // crossbar; ball crossing the line above this bounces
