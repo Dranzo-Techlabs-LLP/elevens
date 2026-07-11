@@ -25,6 +25,17 @@ const NOMINAL: Record<string, number> = { walk: 1.5, jog: 3.5, sprint: 7.4 };
 
 let gltf: { scene: THREE.Group; animations: THREE.AnimationClip[] } | null = null;
 
+// empirically calibrated: which way the mannequin's mesh faces relative to
+// our yaw=0 (+x). Live-adjustable from the console for calibration:
+//   window.__modelYaw(value)
+let MODEL_YAW = Math.PI / 2;
+const liveModels: THREE.Object3D[] = [];
+export function setModelYawOffset(v: number) {
+  MODEL_YAW = v;
+  for (const m of liveModels) m.rotation.y = v;
+}
+if (typeof window !== 'undefined') (window as any).__modelYaw = setModelYawOffset;
+
 export async function loadChars(url = '/assets/chars/UAL1.glb'): Promise<boolean> {
   try {
     gltf = (await new GLTFLoader().loadAsync(url)) as any;
@@ -35,6 +46,69 @@ export async function loadChars(url = '/assets/chars/UAL1.glb'): Promise<boolean
   }
 }
 export const charsReady = () => !!gltf;
+
+// ---------------------------------------------------------------
+// KIT SHADER: the mannequin is one mesh, so the kit is painted in the
+// shader from BIND-POSE height bands (the bind pose never changes, so the
+// jersey/shorts/socks zones deform perfectly with the animation):
+//   boots -> socks -> skin legs -> shorts -> jersey (short sleeves via
+//   arm-distance cut) -> neck/head skin -> hair cap + simple face (eyes)
+// ---------------------------------------------------------------
+const SKINS = [0xf1c27d, 0xe0ac69, 0xc68642, 0x8d5524, 0xffdbac, 0xba8a63];
+const HAIRS = [0x1c1512, 0x3b2a1a, 0x0d0d0d, 0x5b3b1a, 0x62514a];
+
+function makeKitMaterial(team: 'A' | 'B', bindH: number, seed: number) {
+  const mat = new THREE.MeshStandardMaterial({ roughness: 0.72 });
+  const uTeam = { value: new THREE.Color(team === 'A' ? 0x2563eb : 0xdc2626) };
+  const uShorts = { value: new THREE.Color(team === 'A' ? 0x122a5c : 0x5c1212) };
+  const uSock = { value: new THREE.Color(team === 'A' ? 0x2563eb : 0xdc2626) };
+  const uSkin = { value: new THREE.Color(SKINS[Math.abs(seed) % SKINS.length]) };
+  const uHair = { value: new THREE.Color(HAIRS[Math.abs(seed >> 2) % HAIRS.length]) };
+  const uH = { value: bindH };
+  mat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, { uTeam, uShorts, uSock, uSkin, uHair, uH });
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vBind;')
+      .replace('#include <begin_vertex>', 'vBind = position;\n#include <begin_vertex>');
+    sh.fragmentShader = sh.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+         varying vec3 vBind;
+         uniform vec3 uTeam, uShorts, uSock, uSkin, uHair;
+         uniform float uH;`,
+      )
+      .replace(
+        '#include <color_fragment>',
+        `#include <color_fragment>
+        {
+          float f = vBind.y / uH;           // 0 feet .. 1 head top
+          float armR = length(vBind.xz);    // T-pose: arms reach sideways
+          vec3 kit = uSkin;
+          if (f < 0.045) kit = vec3(0.08);                 // boots
+          else if (f < 0.16) kit = uSock;                  // socks
+          else if (f < 0.47) kit = uSkin;                  // legs
+          else if (f < 0.60) kit = uShorts;                // shorts
+          else if (f < 0.855) {
+            // torso band: shirt, but bare forearms/hands (short sleeves)
+            kit = (armR > uH * 0.34 && f > 0.72) ? uSkin : uTeam;
+          } else {
+            // head zone
+            kit = uSkin;
+            // hair: upper-back of the skull
+            if (f > 0.935 || (f > 0.90 && vBind.z < -0.005)) kit = uHair;
+            // eyes: two dots on the front of the face
+            vec2 e1 = vec2( 0.026 * uH, 0.924 * uH);
+            vec2 e2 = vec2(-0.026 * uH, 0.924 * uH);
+            if (vBind.z > 0.02 && (distance(vBind.xy, e1) < 0.007 * uH || distance(vBind.xy, e2) < 0.007 * uH))
+              kit = vec3(0.05);
+          }
+          diffuseColor.rgb = kit;
+        }`,
+      );
+  };
+  return mat;
+}
 
 export interface CharState {
   speed: number;
@@ -57,22 +131,20 @@ export class CharModel {
   private kickT = 0;
   private speedF = 0; // filtered speed for stable state picks
 
-  constructor(team: 'A' | 'B') {
+  constructor(team: 'A' | 'B', seed = 0) {
     const model = skeletonClone(gltf!.scene);
     // normalize to 1.82m
     const bbox = new THREE.Box3().setFromObject(model);
     const h = Math.max(0.01, bbox.max.y - bbox.min.y);
     model.scale.setScalar(1.82 / h);
-    // glTF assets face +Z; our players face +X (yaw 0) -> rotate the child
-    model.rotation.y = -Math.PI / 2;
+    // face +X at yaw 0 (offset empirically calibrated; see setModelYawOffset)
+    model.rotation.y = MODEL_YAW;
+    liveModels.push(model);
     model.traverse((o: any) => {
       if (o.isMesh || o.isSkinnedMesh) {
         o.castShadow = true;
         o.frustumCulled = false; // skinned bounds pop otherwise
-        const m = (o.material as THREE.MeshStandardMaterial).clone();
-        m.color = new THREE.Color(team === 'A' ? 0x3b82f6 : 0xef4444);
-        m.roughness = 0.72;
-        o.material = m;
+        o.material = makeKitMaterial(team, h, seed);
       }
       if (o.name === 'thigh_r') this.thighR = o;
       if (o.name === 'calf_r') this.calfR = o;

@@ -409,7 +409,7 @@ function getModel(id: string, name: string, team: 'A' | 'B') {
     let seed = 0;
     for (let i = 0; i < id.length; i++) seed = (seed * 31 + id.charCodeAt(i)) | 0;
     const rig = charsReady()
-      ? new CharModel(team)
+      ? new CharModel(team, seed)
       : new HumanRig(team === 'A' ? 0x2563eb : 0xdc2626, seed);
     scene.add(rig.group);
     const lb = label(name);
@@ -506,6 +506,8 @@ function onMsg(m: any) {
     }
     case 's3': {
       (window as any).__snap = m; // debug/telemetry hook
+      (window as any).__camYaw = camYaw;
+      (window as any).__camMode = camMode;
       const prev = phase;
       phase = m.phase;
       snaps.push({ at: performance.now(), s: m });
@@ -667,6 +669,7 @@ function frame() {
     if (meSnap) ($('stam') as HTMLElement).style.width = `${Math.round(meSnap.stamina * 100)}%`;
 
     // camera (follows the INTERPOLATED body)
+    if (calibMode) { renderer.render(scene, camera); requestAnimationFrame(frame); return; }
     const me = localMe;
     const mx = me ? myVisX : view.ball.x;
     const mz = me ? myVisZ : view.ball.z;
@@ -725,6 +728,20 @@ let myVisZ = 0;
 // lobby caches (names/teams of humans for rendering)
 const lobbyTeams = new Map<string, 'A' | 'B'>();
 const lobbyNames = new Map<string, string>();
+
+// --- facing calibration harness (console): __calib() spawns a lone model at
+// origin with yaw 0 and locks a side-on camera; __modelYaw(v) rotates it live.
+let calibMode = false;
+(window as any).__calib = () => {
+  calibMode = true;
+  const rig = new CharModel('A');
+  rig.group.position.set(0, 0, 0);
+  scene.add(rig.group);
+  (window as any).__calibRig = rig;
+  setInterval(() => rig.update(1 / 60, { speed: 3, stamina: 1, yawRate: 0 }), 16);
+  camera.position.set(0, 1.6, 6);
+  camera.lookAt(0, 1, 0);
+};
 
 function resize() {
   renderer.setSize(innerWidth, innerHeight);
