@@ -31,8 +31,18 @@ export type ClientMsg =
   | { type: 'join'; room: string | null; name: string; avatar?: string }
   // held input state, last-write-wins on the server. seq is unused for now —
   // it exists so client-side prediction/reconciliation can be added later
-  // without a protocol change.
-  | { type: 'input'; seq: number; mx: number; my: number; kick: boolean }
+  // without a protocol change. PES-style buttons: pass doubles as
+  // pressure/tackle when not in possession; shoot/lob charge while held.
+  | {
+      type: 'input';
+      seq: number;
+      mx: number;
+      my: number;
+      sprint: boolean;
+      pass: boolean;
+      shoot: boolean;
+      lob: boolean;
+    }
   | { type: 'start' }    // host only, from the lobby
   | { type: 'rematch' }  // vote; majority of humans restarts the match
   | { type: 'ping'; t: number }; // latency probe, t = client timestamp

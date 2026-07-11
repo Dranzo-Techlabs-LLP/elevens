@@ -189,19 +189,45 @@
   #joy-base { width: 104px; height: 104px; border: 2px solid rgba(255,255,255,0.45); }
   #joy-knob { width: 44px; height: 44px; background: rgba(255,255,255,0.4); }
 
-  /* touch controls (shown only on touch devices, in-game) */
-  #kick {
+  /* PES-style touch action cluster (shown only on touch devices, in-game) */
+  #actions {
     position: fixed;
-    right: max(24px, env(safe-area-inset-right));
-    bottom: max(28px, env(safe-area-inset-bottom));
-    width: 92px; height: 92px;
-    border-radius: 50%;
-    background: rgba(255,255,255,0.18);
-    border: 3px solid rgba(255,255,255,0.55);
-    color: #fff; font-weight: 800; font-size: 16px;
-    display: flex; align-items: center; justify-content: center;
+    right: max(16px, env(safe-area-inset-right));
+    bottom: max(20px, env(safe-area-inset-bottom));
+    width: 210px; height: 190px;
     z-index: 6;
+    pointer-events: none;
+  }
+  .abtn {
+    position: absolute;
+    border-radius: 50%;
+    color: #fff; font-weight: 800;
+    display: flex; align-items: center; justify-content: center;
+    pointer-events: auto;
     -webkit-tap-highlight-color: transparent;
+    border: 2px solid rgba(255,255,255,0.5);
+    text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+  }
+  .abtn.held { filter: brightness(1.4); transform: scale(0.94); }
+  #btn-shoot {
+    width: 82px; height: 82px; font-size: 15px;
+    right: 0; top: 0;
+    background: rgba(220, 38, 38, 0.55);
+  }
+  #btn-pass {
+    width: 78px; height: 78px; font-size: 14px;
+    right: 12px; bottom: 0;
+    background: rgba(34, 197, 94, 0.55);
+  }
+  #btn-lob {
+    width: 62px; height: 62px; font-size: 12px;
+    left: 6px; top: 10px;
+    background: rgba(59, 130, 246, 0.55);
+  }
+  #btn-sprint {
+    width: 58px; height: 58px; font-size: 11px;
+    left: 0; bottom: 12px;
+    background: rgba(255, 255, 255, 0.25);
   }
 </style>
 </head>
@@ -242,17 +268,20 @@
     <p><b>You control ONE player.</b> Score more goals than the other team
     before the clock hits zero. 3&nbsp;minutes per match.</p>
     <p style="margin-top:10px"><b>Desktop</b><br>
-    Move: <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or arrow keys<br>
-    Kick: hold <kbd>SPACE</kbd>, release to strike</p>
+    Move: <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or arrow keys ·
+    Sprint: hold <kbd>SHIFT</kbd><br>
+    Pass: <kbd>SPACE</kbd> or <kbd>J</kbd> ·
+    Shoot: hold <kbd>K</kbd> for power ·
+    Lob: <kbd>L</kbd></p>
     <p style="margin-top:10px"><b>Phone</b><br>
-    Move: touch and drag anywhere on the <b>left half</b> of the screen<br>
-    Kick: hold the <b>KICK</b> button, release to strike</p>
+    Move: drag on the <b>left half</b> · buttons on the right:
+    <b>PASS</b>, <b>SHOOT</b> (hold&nbsp;=&nbsp;power), <b>LOB</b>, <b>SPRINT</b></p>
     <p style="margin-top:10px"><b>Ball control</b><br>
-    Run onto the ball to take it — it sticks to your feet while you dribble.
-    Charge decides the ball: <b>tap</b>&nbsp;=&nbsp;short pass ·
-    <b>half&nbsp;hold</b>&nbsp;=&nbsp;driven long pass ·
-    <b>full&nbsp;hold</b>&nbsp;=&nbsp;lofted ball / shot.
-    Kicks go where you're facing. Stand in the path to block or trap it.</p>
+    Run onto the ball to take it — it sticks to your feet while you dribble;
+    sprinting knocks it further ahead. <b>PASS</b> auto-aims your best
+    teammate. <b>SHOOT</b> locks onto goal — placement follows your facing.
+    <b>LOB</b> floats a through ball to your most advanced teammate.
+    Defending, <b>PASS</b> becomes a tackle lunge — win it clean or stumble.</p>
     <p style="margin-top:10px"><b>Camera</b><br>
     Press <kbd>C</kbd> (or the 🎥 button) to cycle: Broadcast → Third person →
     First person → Overhead. More options in ⚙️ Settings.</p>
@@ -280,7 +309,13 @@
 
 <div id="banner"></div>
 <div id="hint"></div>
-<div id="kick" class="hidden">KICK</div>
+
+<div id="actions" class="hidden">
+  <div id="btn-shoot" class="abtn ui">SHOOT</div>
+  <div id="btn-pass" class="abtn ui">PASS</div>
+  <div id="btn-lob" class="abtn ui">LOB</div>
+  <div id="btn-sprint" class="abtn ui">SPRINT</div>
+</div>
 
 <div id="hud" class="hidden">
   <div id="hud-score"></div>
@@ -313,9 +348,11 @@
   <div class="card">
     <p><b>Controls</b></p>
     <p><b>Desktop:</b> <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>/arrows move ·
-       <kbd>SPACE</kbd> hold &amp; release to kick · <kbd>C</kbd> camera</p>
-    <p><b>Phone:</b> drag left half to move · hold <b>KICK</b>, release to strike · 🎥 camera</p>
-    <p><b>Kick charge:</b> tap = short pass · half hold = driven long pass · full hold = loft / shot</p>
+       <kbd>SHIFT</kbd> sprint · <kbd>SPACE</kbd>/<kbd>J</kbd> pass ·
+       <kbd>K</kbd> shoot (hold = power) · <kbd>L</kbd> lob · <kbd>C</kbd> camera</p>
+    <p><b>Phone:</b> drag left half to move · <b>PASS / SHOOT / LOB / SPRINT</b> buttons · 🎥 camera</p>
+    <p><b>PES tips:</b> pass auto-aims teammates · shoot locks onto goal, aim up/down to place it ·
+       defending, PASS = tackle lunge</p>
   </div>
   <button id="settings-close">Done</button>
 </div>

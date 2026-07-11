@@ -1,13 +1,27 @@
-// Unified input: keyboard (WASD/arrows + Space) and touch (virtual joystick
-// on the left half of the screen + a KICK button bottom-right).
-const JOY_RADIUS = 60;   // px drag for full speed
+// Unified input, PES-style:
+//   move    — WASD/arrows or virtual joystick (left half of screen)
+//   pass    — Space/J or PASS button (doubles as pressure/tackle defending)
+//   shoot   — K or SHOOT button (hold = power)
+//   lob     — L or LOB button (lofted through ball)
+//   sprint  — Shift or SPRINT button (hold)
+const JOY_RADIUS = 60; // px drag for full speed
 const JOY_DEADZONE = 0.12;
+
+export interface ActionButtons {
+  pass: HTMLElement;
+  shoot: HTMLElement;
+  lob: HTMLElement;
+  sprint: HTMLElement;
+}
 
 export class Input {
   // current held state, polled by the main loop each frame
   mx = 0;
   my = 0;
-  kick = false;
+  pass = false;
+  shoot = false;
+  lob = false;
+  sprint = false;
 
   /** main.ts flips this when a match is on screen; while false we don't
    *  intercept touches (menus need normal taps and text inputs). */
@@ -18,17 +32,16 @@ export class Input {
   joyBase = { x: 0, y: 0 };
   joyKnob = { x: 0, y: 0 };
 
-  /** local kick-hold start time — lets us render our own charge ring with
-   *  zero latency instead of waiting for the server snapshot */
-  kickHeldSince = 0;
+  /** local hold-start times so the charge ring shows with zero latency */
+  heldSince: Record<'pass' | 'shoot' | 'lob', number> = { pass: 0, shoot: 0, lob: 0 };
 
   private keys = new Set<string>();
+  private touchHeld = { pass: false, shoot: false, lob: false, sprint: false };
   private joyTouchId: number | null = null;
-  private kickTouch = false;
 
-  constructor(kickEl: HTMLElement) {
+  constructor(buttons: ActionButtons) {
     addEventListener('keydown', (e) => {
-      if (e.code === 'Space' && this.enabled) e.preventDefault();
+      if (this.enabled && ['Space', 'KeyJ', 'KeyK', 'KeyL'].includes(e.code)) e.preventDefault();
       this.keys.add(e.code);
     });
     addEventListener('keyup', (e) => this.keys.delete(e.code));
@@ -38,23 +51,29 @@ export class Input {
     addEventListener('touchend', (e) => this.touchEnd(e));
     addEventListener('touchcancel', (e) => this.touchEnd(e));
 
-    // kick button: hold to charge, release to fire (stopPropagation keeps
-    // these touches away from the joystick handler on window)
-    const down = (e: Event) => {
-      e.preventDefault();
-      e.stopPropagation();
-      this.kickTouch = true;
-    };
-    const up = (e: Event) => {
-      e.preventDefault();
-      e.stopPropagation();
-      this.kickTouch = false;
-    };
-    kickEl.addEventListener('touchstart', down, { passive: false });
-    kickEl.addEventListener('touchend', up);
-    kickEl.addEventListener('touchcancel', up);
-    kickEl.addEventListener('mousedown', down);
-    kickEl.addEventListener('mouseup', up);
+    // hold-to-charge action buttons (touch + mouse); stopPropagation keeps
+    // these touches away from the joystick handler on window
+    for (const name of ['pass', 'shoot', 'lob', 'sprint'] as const) {
+      const el = buttons[name];
+      const down = (e: Event) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.touchHeld[name] = true;
+        el.classList.add('held');
+      };
+      const up = (e: Event) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.touchHeld[name] = false;
+        el.classList.remove('held');
+      };
+      el.addEventListener('touchstart', down, { passive: false });
+      el.addEventListener('touchend', up);
+      el.addEventListener('touchcancel', up);
+      el.addEventListener('mousedown', down);
+      el.addEventListener('mouseup', up);
+      el.addEventListener('mouseleave', up);
+    }
   }
 
   private touchStart(e: TouchEvent) {
@@ -127,8 +146,25 @@ export class Input {
     this.mx = mx;
     this.my = my;
 
-    const kick = this.keys.has('Space') || this.kickTouch;
-    if (kick && !this.kick) this.kickHeldSince = performance.now();
-    this.kick = kick;
+    const now = performance.now();
+    const set = (name: 'pass' | 'shoot' | 'lob', held: boolean) => {
+      if (held && !this[name]) this.heldSince[name] = now;
+      this[name] = held;
+    };
+    set('pass', this.keys.has('Space') || this.keys.has('KeyJ') || this.touchHeld.pass);
+    set('shoot', this.keys.has('KeyK') || this.touchHeld.shoot);
+    set('lob', this.keys.has('KeyL') || this.touchHeld.lob);
+    this.sprint =
+      this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') || this.touchHeld.sprint;
+  }
+
+  /** 0..1 charge of whichever chargeable button is held (for the ring). */
+  localCharge(chargeMs: number): number {
+    const now = performance.now();
+    let c = 0;
+    if (this.shoot) c = Math.max(c, (now - this.heldSince.shoot) / chargeMs);
+    if (this.lob) c = Math.max(c, (now - this.heldSince.lob) / chargeMs);
+    if (this.pass) c = Math.max(c, (now - this.heldSince.pass) / chargeMs);
+    return Math.min(1, c);
   }
 }

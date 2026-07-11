@@ -44,18 +44,39 @@ export const CONFIG = {
   KICKABLE_HEIGHT: 55,     // ball above this is out of reach (no kick/touch)
   KICK_COOLDOWN_TICKS: 8,  // after kicking, can't re-control (~270ms @30Hz)
 
-  // --- kicking (one button, charge picks the ball type) ---
-  // tap        -> short ground pass
-  // half hold  -> driven long pass, low skimmer
-  // full hold  -> lofted long ball / shot
+  // --- PES-style actions ---
   KICK_RADIUS: 36,         // ball must be within this of player center
-  KICK_MIN: 340,           // ball speed for an instant tap
-  KICK_MAX: 800,           // ball speed at full charge
-  KICK_CHARGE_MS: 800,     // hold duration for full charge
-  KICK_LIFT_BASE: 0.04,    // loft at low charge (stays on the deck)
-  KICK_LIFT_RANGE: 0.42,   // extra loft gained across the ramp below
-  KICK_LIFT_RAMP0: 0.45,   // charge where loft starts ramping in
-  KICK_LIFT_RAMP1: 0.95,   // charge where loft is maxed
+  KICK_CHARGE_MS: 800,     // hold duration for full charge (shoot/lob)
+
+  // pass: power is AUTOMATIC from target distance (PES-style), ground ball
+  PASS_MIN: 360,
+  PASS_MAX: 640,
+  PASS_LIFT: 0.03,
+  PASS_CONE_DEG: 100,      // teammates within this cone of facing are targets
+
+  // lob / through ball: lofted, aimed at the most advanced open teammate
+  LOB_MIN: 480,
+  LOB_MAX: 800,
+  LOB_LIFT: 0.58,          // apex must clear KICKABLE_HEIGHT or it's not a lob
+
+  // shoot: hold = power; aim locks to the goal with placement from facing
+  SHOT_MIN: 520,
+  SHOT_MAX: 840,
+  SHOT_LIFT_BASE: 0.06,
+  SHOT_LIFT_RANGE: 0.26,
+  SHOT_PLACE_MAX: 0.42,    // fraction of goal half-width you can place away from center
+
+  // sprint (hold): faster, but the ball runs further ahead of your feet
+  SPRINT_MULT: 1.35,
+  SPRINT_ACCEL_MULT: 1.25,
+  SPRINT_LEAD_MULT: 1.9,
+
+  // tackle / pressure (PASS button while defending): lunge at the ball;
+  // win it clean or stumble and recover
+  TACKLE_SPEED: 540,
+  TACKLE_TICKS: 6,          // lunge duration
+  TACKLE_RECOVER_TICKS: 14, // stumble after a missed lunge (or being tackled)
+  TACKLE_COOLDOWN_TICKS: 26,
 
   // --- goal frame ---
   GOAL_HEIGHT: 110,        // crossbar; ball crossing the line above this bounces

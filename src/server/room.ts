@@ -6,6 +6,19 @@ import { botThink } from './bot';
 const DT = 1 / C.TICK_RATE;      // fixed timestep, seconds
 const TICK_MS = 1000 / C.TICK_RATE;
 
+export interface PlayerInput {
+  mx: number;
+  my: number;
+  sprint: boolean;
+  pass: boolean;
+  shoot: boolean;
+  lob: boolean;
+}
+
+export const idleInput = (): PlayerInput => ({
+  mx: 0, my: 0, sprint: false, pass: false, shoot: false, lob: false,
+});
+
 export interface Entity {
   id: string;
   name: string;
@@ -17,10 +30,35 @@ export interface Entity {
   vx: number;
   vy: number;
   dir: number; // facing, radians — follows movement direction
-  input: { mx: number; my: number; kick: boolean };
-  kickHeldMs: number; // >0 while charging a kick; fires on release
+  input: PlayerInput;
+  prevPass: boolean; // rising-edge detection: pass = tackle when defending
+  passHeldMs: number;
+  shootHeldMs: number;
+  lobHeldMs: number;
+  lungeTicks: number; // >0 while committed to a tackle lunge
+  lungeVx: number;
+  lungeVy: number;
+  recoverTicks: number; // stumble after a missed tackle / being dispossessed
+  tackleCooldownUntil: number;
   kickCooldownUntil: number; // tick until which this player can't (re)control the ball
   avatar?: string; // tiny selfie data URL, humans only
+}
+
+export function makeEntityDefaults() {
+  return {
+    x: 0, y: 0, vx: 0, vy: 0,
+    input: idleInput(),
+    prevPass: false,
+    passHeldMs: 0,
+    shootHeldMs: 0,
+    lobHeldMs: 0,
+    lungeTicks: 0,
+    lungeVx: 0,
+    lungeVy: 0,
+    recoverTicks: 0,
+    tackleCooldownUntil: 0,
+    kickCooldownUntil: 0,
+  };
 }
 
 export const rooms = new Map<string, Room>();
@@ -49,6 +87,7 @@ export class Room {
   ball = { x: C.PITCH_W / 2, y: C.PITCH_H / 2, z: 0, vx: 0, vy: 0, vz: 0 };
   /** id of the player currently carrying/controlling the ball, if any */
   ownerId: string | null = null;
+  private ownerSince = 0; // tick when possession last changed hands
   tick = 0;
   rematchVotes = new Set<string>();
   private pauseUntilTick = 0;
@@ -98,10 +137,8 @@ export class Room {
       const id = `p${nextId++}`;
       const e: Entity = {
         id, name, team, bot: false, ws,
-        x: 0, y: 0, vx: 0, vy: 0, dir: team === 'A' ? 0 : Math.PI,
-        input: { mx: 0, my: 0, kick: false },
-        kickHeldMs: 0,
-        kickCooldownUntil: 0,
+        dir: team === 'A' ? 0 : Math.PI,
+        ...makeEntityDefaults(),
         avatar,
       };
       this.entities.set(id, e);
@@ -124,7 +161,7 @@ export class Room {
     slot.ws = ws;
     slot.name = name;
     slot.avatar = avatar;
-    slot.input = { mx: 0, my: 0, kick: false };
+    slot.input = idleInput();
     if (!this.hostId) this.hostId = slot.id;
     this.sendTo(slot, { type: 'joined', room: this.code, playerId: slot.id, team: slot.team });
     this.broadcastAvatars();
@@ -143,7 +180,7 @@ export class Room {
       e.bot = true;
       e.ws = null;
       e.name = `Bot (${e.name})`;
-      e.input = { mx: 0, my: 0, kick: false };
+      e.input = idleInput();
       delete e.avatar;
     }
 
@@ -168,7 +205,13 @@ export class Room {
           mx /= len;
           my /= len;
         }
-        e.input = { mx, my, kick: !!msg.kick };
+        e.input = {
+          mx, my,
+          sprint: !!msg.sprint,
+          pass: !!msg.pass,
+          shoot: !!msg.shoot,
+          lob: !!msg.lob,
+        };
         break;
       }
       case 'start':
@@ -199,10 +242,8 @@ export class Room {
         const id = `p${nextId++}`;
         this.entities.set(id, {
           id, name: `Bot ${team}${n++}`, team, bot: true, ws: null,
-          x: 0, y: 0, vx: 0, vy: 0, dir: team === 'A' ? 0 : Math.PI,
-          input: { mx: 0, my: 0, kick: false },
-          kickHeldMs: 0,
-          kickCooldownUntil: 0,
+          dir: team === 'A' ? 0 : Math.PI,
+          ...makeEntityDefaults(),
         });
         count++;
       }
@@ -226,9 +267,10 @@ export class Room {
       this.placeAtFormation(e);
       e.vx = 0;
       e.vy = 0;
-      e.kickHeldMs = 0;
-      e.kickCooldownUntil = 0;
-      if (e.bot) e.input = { mx: 0, my: 0, kick: false };
+      e.passHeldMs = e.shootHeldMs = e.lobHeldMs = 0;
+      e.lungeTicks = e.recoverTicks = 0;
+      e.kickCooldownUntil = e.tackleCooldownUntil = 0;
+      if (e.bot) e.input = idleInput();
     }
   }
 
@@ -281,24 +323,44 @@ export class Room {
   private physics() {
     const list = [...this.entities.values()];
 
-    // players: accelerate toward held input, damp when idle, clamp speed
+    // players: accelerate toward held input, damp when idle, clamp speed.
+    // Sprint raises the cap, a missed tackle (recover) lowers it, and a lunge
+    // overrides velocity entirely for a few ticks.
     for (const e of list) {
       const { mx, my } = e.input;
-      e.vx += mx * C.PLAYER_ACCEL * DT;
-      e.vy += my * C.PLAYER_ACCEL * DT;
-      if (!mx && !my) {
-        const damp = Math.max(0, 1 - C.PLAYER_FRICTION * DT);
-        e.vx *= damp;
-        e.vy *= damp;
-      }
-      const sp = Math.hypot(e.vx, e.vy);
-      if (sp > C.PLAYER_SPEED) {
-        e.vx *= C.PLAYER_SPEED / sp;
-        e.vy *= C.PLAYER_SPEED / sp;
+      if (e.lungeTicks > 0) {
+        e.lungeTicks--;
+        e.vx = e.lungeVx;
+        e.vy = e.lungeVy;
+        if (e.lungeTicks === 0) e.recoverTicks = C.TACKLE_RECOVER_TICKS; // lunge spent
+      } else {
+        let accel = C.PLAYER_ACCEL;
+        let maxSp = C.PLAYER_SPEED;
+        if (e.input.sprint && (mx || my)) {
+          accel *= C.SPRINT_ACCEL_MULT;
+          maxSp *= C.SPRINT_MULT;
+        }
+        if (e.recoverTicks > 0) {
+          e.recoverTicks--;
+          accel *= 0.5;
+          maxSp *= 0.55;
+        }
+        e.vx += mx * accel * DT;
+        e.vy += my * accel * DT;
+        if (!mx && !my) {
+          const damp = Math.max(0, 1 - C.PLAYER_FRICTION * DT);
+          e.vx *= damp;
+          e.vy *= damp;
+        }
+        const sp = Math.hypot(e.vx, e.vy);
+        if (sp > maxSp) {
+          e.vx *= maxSp / sp;
+          e.vy *= maxSp / sp;
+        }
       }
       e.x = clamp(e.x + e.vx * DT, C.PLAYER_RADIUS, C.PITCH_W - C.PLAYER_RADIUS);
       e.y = clamp(e.y + e.vy * DT, C.PLAYER_RADIUS, C.PITCH_H - C.PLAYER_RADIUS);
-      if (mx || my) e.dir = Math.atan2(my, mx);
+      if ((mx || my) && e.lungeTicks === 0) e.dir = Math.atan2(my, mx);
     }
 
     // players shove each other apart (no overlap)
@@ -379,7 +441,8 @@ export class Room {
         // through the interpolation. Sprinting pushes the ball further ahead
         // — real knock-on dribbling — walking keeps it glued tight.
         const speed = Math.hypot(owner.vx, owner.vy);
-        const lead = C.PLAYER_RADIUS + C.BALL_RADIUS + 2 + speed * C.DRIBBLE_LEAD;
+        const leadMult = owner.input.sprint ? C.SPRINT_LEAD_MULT : 1;
+        const lead = C.PLAYER_RADIUS + C.BALL_RADIUS + 2 + speed * C.DRIBBLE_LEAD * leadMult;
         const tx = owner.x + Math.cos(owner.dir) * lead;
         const ty = owner.y + Math.sin(owner.dir) * lead;
         const k = 1 - Math.exp(-C.CARRY_SPRING * DT);
@@ -410,37 +473,157 @@ export class Room {
       }
     }
 
-    // ---- kicks ----
-    // One button, charge picks the ball type:
-    //   tap        -> short ground pass
-    //   half hold  -> driven long pass (low, fast, tiny hop)
-    //   full hold  -> lofted long ball / shot (clears heads, drops in the box)
-    for (const e of list) {
-      if (e.input.kick) {
-        e.kickHeldMs += DT * 1000;
-        continue;
-      }
-      if (e.kickHeldMs > 0) {
-        const t = Math.min(1, e.kickHeldMs / C.KICK_CHARGE_MS);
-        e.kickHeldMs = 0;
-        const d = Math.hypot(ball.x - e.x, ball.y - e.y);
-        const canKick = (owner === e || d <= C.KICK_RADIUS) && ball.z < C.KICKABLE_HEIGHT;
-        if (canKick) {
-          const power = C.KICK_MIN + (C.KICK_MAX - C.KICK_MIN) * t;
-          // loft ramps in smoothly only past mid-charge (smoothstep), so
-          // passes stay playable on the deck and only committed holds loft
-          const s = Math.min(1, Math.max(0, (t - C.KICK_LIFT_RAMP0) / (C.KICK_LIFT_RAMP1 - C.KICK_LIFT_RAMP0)));
-          const lift = C.KICK_LIFT_BASE + C.KICK_LIFT_RANGE * s * s * (3 - 2 * s);
-          ball.vx = Math.cos(e.dir) * power;
-          ball.vy = Math.sin(e.dir) * power;
-          ball.vz = power * lift;
-          // release + cooldown so the ball actually leaves the foot instead
-          // of being instantly re-captured by the kicker
-          if (this.ownerId === e.id) this.ownerId = null;
-          e.kickCooldownUntil = this.tick + C.KICK_COOLDOWN_TICKS;
-        }
+    // ---- PES-style actions ----
+    for (const e of list) this.processActions(e, owner);
+  }
+
+  /**
+   * PES action model. Buttons are held state; charge accumulates while held
+   * and the action fires on RELEASE (shoot/lob power = hold time; pass power
+   * is automatic from target distance). The PASS button is context-sensitive:
+   * when you're NOT on the ball its rising edge is a pressure/tackle lunge.
+   */
+  private processActions(e: Entity, owner: Entity | undefined) {
+    const ball = this.ball;
+    const dist = Math.hypot(ball.x - e.x, ball.y - e.y);
+    const canPlay = (owner === e || dist <= C.KICK_RADIUS) && ball.z < C.KICKABLE_HEIGHT;
+
+    // pressure/tackle on pass rising edge while defending
+    if (e.input.pass && !e.prevPass && !canPlay) this.tryTackle(e);
+    e.prevPass = e.input.pass;
+
+    const fire = (kind: 'pass' | 'shoot' | 'lob', heldMs: number) => {
+      if (!canPlay) return;
+      const t = Math.min(1, heldMs / C.KICK_CHARGE_MS);
+      if (kind === 'pass') this.doPass(e);
+      else if (kind === 'shoot') this.doShoot(e, t);
+      else this.doLob(e);
+      if (this.ownerId === e.id) this.ownerId = null;
+      e.kickCooldownUntil = this.tick + C.KICK_COOLDOWN_TICKS;
+    };
+
+    if (e.input.pass) e.passHeldMs += DT * 1000;
+    else if (e.passHeldMs > 0) {
+      const ms = e.passHeldMs;
+      e.passHeldMs = 0;
+      fire('pass', ms);
+    }
+    if (e.input.shoot) e.shootHeldMs += DT * 1000;
+    else if (e.shootHeldMs > 0) {
+      const ms = e.shootHeldMs;
+      e.shootHeldMs = 0;
+      fire('shoot', ms);
+    }
+    if (e.input.lob) e.lobHeldMs += DT * 1000;
+    else if (e.lobHeldMs > 0) {
+      const ms = e.lobHeldMs;
+      e.lobHeldMs = 0;
+      fire('lob', ms);
+    }
+  }
+
+  /** Best pass target: teammate inside the facing cone, near beats far,
+   *  straight-ahead beats wide. Aimed with velocity lead (PES-style). */
+  private doPass(e: Entity) {
+    const ball = this.ball;
+    const cone = (C.PASS_CONE_DEG * Math.PI) / 180;
+    let best: Entity | undefined;
+    let bestScore = Infinity;
+    for (const m of this.entities.values()) {
+      if (m.team !== e.team || m === e) continue;
+      const d = Math.hypot(m.x - e.x, m.y - e.y);
+      let ang = Math.atan2(m.y - e.y, m.x - e.x) - e.dir;
+      while (ang > Math.PI) ang -= Math.PI * 2;
+      while (ang < -Math.PI) ang += Math.PI * 2;
+      if (Math.abs(ang) > cone / 2) continue;
+      const score = d + Math.abs(ang) * 220; // wide targets pay a distance penalty
+      if (score < bestScore) {
+        bestScore = score;
+        best = m;
       }
     }
+    let aimX: number, aimY: number, d: number;
+    if (best) {
+      d = Math.hypot(best.x - e.x, best.y - e.y);
+      const power = clamp(340 + d * 0.9, C.PASS_MIN, C.PASS_MAX);
+      const flight = d / power; // rough travel time for the lead
+      aimX = best.x + best.vx * flight * 0.9;
+      aimY = best.y + best.vy * flight * 0.9;
+    } else {
+      aimX = e.x + Math.cos(e.dir) * 200; // nobody open: play it into space ahead
+      aimY = e.y + Math.sin(e.dir) * 200;
+    }
+    d = Math.hypot(aimX - e.x, aimY - e.y);
+    const power = clamp(340 + d * 0.9, C.PASS_MIN, C.PASS_MAX);
+    const ang = Math.atan2(aimY - e.y, aimX - e.x);
+    ball.vx = Math.cos(ang) * power;
+    ball.vy = Math.sin(ang) * power;
+    ball.vz = power * C.PASS_LIFT;
+  }
+
+  /** Lofted through ball to the most advanced teammate ahead, else into space. */
+  private doLob(e: Entity) {
+    const ball = this.ball;
+    const attackX = e.team === 'A' ? C.PITCH_W : 0;
+    let best: Entity | undefined;
+    let bestAdv = -Infinity;
+    for (const m of this.entities.values()) {
+      if (m.team !== e.team || m === e) continue;
+      let ang = Math.atan2(m.y - e.y, m.x - e.x) - e.dir;
+      while (ang > Math.PI) ang -= Math.PI * 2;
+      while (ang < -Math.PI) ang += Math.PI * 2;
+      if (Math.abs(ang) > Math.PI * 0.75) continue; // not behind me
+      const adv = -Math.abs(attackX - m.x); // closer to opponent goal = better
+      if (adv > bestAdv) {
+        bestAdv = adv;
+        best = m;
+      }
+    }
+    let aimX: number, aimY: number;
+    if (best) {
+      const d0 = Math.hypot(best.x - e.x, best.y - e.y);
+      const flight = d0 / 600;
+      aimX = best.x + best.vx * flight;
+      aimY = best.y + best.vy * flight;
+    } else {
+      aimX = e.x + Math.cos(e.dir) * 320;
+      aimY = e.y + Math.sin(e.dir) * 320;
+    }
+    const d = Math.hypot(aimX - e.x, aimY - e.y);
+    const power = clamp(420 + d * 0.85, C.LOB_MIN, C.LOB_MAX);
+    const ang = Math.atan2(aimY - e.y, aimX - e.x);
+    ball.vx = Math.cos(ang) * power;
+    ball.vy = Math.sin(ang) * power;
+    ball.vz = power * C.LOB_LIFT;
+  }
+
+  /** Shot: locked to the goal you attack; placement comes from your facing's
+   *  vertical component, power and loft from the charge. */
+  private doShoot(e: Entity, t: number) {
+    const ball = this.ball;
+    const goalX = e.team === 'A' ? C.PITCH_W : 0;
+    const place = clamp(Math.sin(e.dir) * 1.4, -1, 1) * C.SHOT_PLACE_MAX;
+    const aimY = C.PITCH_H / 2 + place * C.GOAL_WIDTH;
+    const power = C.SHOT_MIN + (C.SHOT_MAX - C.SHOT_MIN) * t;
+    const ang = Math.atan2(aimY - e.y, goalX - e.x);
+    ball.vx = Math.cos(ang) * power;
+    ball.vy = Math.sin(ang) * power;
+    ball.vz = power * (C.SHOT_LIFT_BASE + C.SHOT_LIFT_RANGE * t);
+  }
+
+  /** Pressure lunge: commit toward where the ball is going. Win it clean via
+   *  updatePossession's lunge priority, or stumble (recover) if you miss. */
+  private tryTackle(e: Entity) {
+    if (this.tick < e.tackleCooldownUntil || e.recoverTicks > 0 || e.lungeTicks > 0) return;
+    const ball = this.ball;
+    const dx = ball.x + ball.vx * 0.15 - e.x;
+    const dy = ball.y + ball.vy * 0.15 - e.y;
+    const d = Math.hypot(dx, dy);
+    if (d > 160 || d < 0.001) return; // too far to bother
+    e.lungeVx = (dx / d) * C.TACKLE_SPEED;
+    e.lungeVy = (dy / d) * C.TACKLE_SPEED;
+    e.lungeTicks = C.TACKLE_TICKS;
+    e.tackleCooldownUntil = this.tick + C.TACKLE_COOLDOWN_TICKS;
   }
 
   /**
@@ -458,8 +641,21 @@ export class Room {
       this.ownerId = null;
       return;
     }
-    const eligible = (e: Entity) => this.tick >= e.kickCooldownUntil;
+    const eligible = (e: Entity) => this.tick >= e.kickCooldownUntil && e.recoverTicks === 0;
     const distTo = (e: Entity) => Math.hypot(ball.x - e.x, ball.y - e.y);
+
+    // a mid-lunge tackler who reaches the ball WINS it outright — that's the
+    // payoff of committing to the tackle. The dispossessed player stumbles.
+    for (const e of this.entities.values()) {
+      if (e.lungeTicks > 0 && distTo(e) < C.CONTROL_RADIUS * 1.1) {
+        const prev = this.ownerId ? this.entities.get(this.ownerId) : undefined;
+        if (prev && prev !== e) prev.recoverTicks = C.TACKLE_RECOVER_TICKS;
+        if (this.ownerId !== e.id) this.ownerSince = this.tick;
+        this.ownerId = e.id;
+        e.lungeTicks = 0; // lunge consumed by the win — no stumble
+        return;
+      }
+    }
 
     let owner = this.ownerId ? this.entities.get(this.ownerId) : undefined;
     if (owner && (!eligible(owner) || distTo(owner) > C.CONTROL_RADIUS * 1.2)) owner = undefined;
@@ -485,12 +681,22 @@ export class Room {
           this.ownerId = null;
         } else {
           this.ownerId = nearest.id;
+          this.ownerSince = this.tick;
         }
       } else {
         this.ownerId = null;
       }
-    } else if (nearest && nearest !== owner && nearestD < distTo(owner) * C.STEAL_RATIO) {
-      this.ownerId = nearest.id; // tackle: clearly closer challenger takes it
+    } else if (
+      nearest &&
+      nearest !== owner &&
+      nearestD < distTo(owner) * C.STEAL_RATIO &&
+      // minimum hold: shoulder-to-shoulder contact can't flip possession
+      // every tick (that deadlocks both players) — stealing without a proper
+      // tackle lunge needs the owner to have HAD the ball for a beat
+      this.tick - this.ownerSince > 8
+    ) {
+      this.ownerId = nearest.id;
+      this.ownerSince = this.tick;
     } else {
       this.ownerId = owner.id;
     }
@@ -513,7 +719,7 @@ export class Room {
         vx: round1(e.vx),
         vy: round1(e.vy),
         dir: Math.round(e.dir * 100) / 100,
-        charge: Math.min(1, e.kickHeldMs / C.KICK_CHARGE_MS),
+        charge: Math.min(1, Math.max(e.passHeldMs, e.shootHeldMs, e.lobHeldMs) / C.KICK_CHARGE_MS),
       })),
       ball: {
         x: round1(this.ball.x),

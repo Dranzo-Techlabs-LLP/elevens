@@ -20,7 +20,7 @@ export const CAM_MODES: { id: CamMode; label: string }[] = [
 interface ViewPlayer extends PlayerSnap {}
 export interface View {
   players: ViewPlayer[];
-  ball: { x: number; y: number; z: number };
+  ball: { x: number; y: number; z: number; vx: number; vy: number };
 }
 
 /** One humanoid: group of boxes with swinging limbs + selfie face. */
@@ -443,11 +443,21 @@ export class Renderer3D {
       this.ballShadow.scale.setScalar(sh);
       (this.ballShadow.material as THREE.MeshBasicMaterial).opacity = 0.3 * sh;
 
-      // shared follow target for broadcast/overhead: my player biased toward
-      // the ball so the action stays in frame (ball only when spectating)
-      const fx = me ? me.x * 0.65 + b.x * 0.35 : b.x;
-      const fy = me ? me.y * 0.65 + b.y * 0.35 : b.y;
-      this.camTarget.lerp(new THREE.Vector3(fx, 0, fy), 1 - Math.exp(-4 * dt));
+      // PES-style follow target: track the BALL first (with a velocity lead
+      // so the camera pans ahead of play), keep my player weighted in
+      const lead = 0.30; // seconds of ball-velocity look-ahead
+      const bx = b.x + b.vx * lead;
+      const by = b.y + b.vy * lead;
+      const fx = me ? bx * 0.7 + me.x * 0.3 : bx;
+      const fy = me ? by * 0.7 + me.y * 0.3 : by;
+      this.camTarget.lerp(
+        new THREE.Vector3(
+          Math.max(120, Math.min(C.PITCH_W - 120, fx)),
+          0,
+          Math.max(80, Math.min(C.PITCH_H - 40, fy)),
+        ),
+        1 - Math.exp(-4 * dt),
+      );
 
       // smoothed yaw for the follow cams — raw dir snaps with input, the
       // camera easing it out is what keeps FP/3P watchable
@@ -491,9 +501,10 @@ export class Renderer3D {
         this.camera.lookAt(t.x, 0, t.z);
         break;
       default:
-        // broadcast: elevated side follow
-        this.camera.position.set(t.x, 430 * z, t.z + 330 * z);
-        this.camera.lookAt(t.x, 10, t.z - 40);
+        // PES-style broadcast: lower and closer than a TV wide shot, panning
+        // with the ball
+        this.camera.position.set(t.x, 270 * z, t.z + 290 * z);
+        this.camera.lookAt(t.x, 8, t.z - 30);
     }
   }
 }

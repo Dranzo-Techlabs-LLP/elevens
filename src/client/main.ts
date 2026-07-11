@@ -8,7 +8,12 @@ const $ = (id: string) => document.getElementById(id) as HTMLElement;
 const canvas = document.getElementById('game') as HTMLCanvasElement;
 
 const net = new Net();
-const input = new Input($('kick'));
+const input = new Input({
+  pass: $('btn-pass'),
+  shoot: $('btn-shoot'),
+  lob: $('btn-lob'),
+  sprint: $('btn-sprint'),
+});
 const renderer = new Renderer3D(canvas);
 const isTouch = 'ontouchstart' in window;
 
@@ -20,7 +25,7 @@ let phase: Phase = 'lobby';
 let inLobbyUi = false;
 let winner: Team | 'draw' | null = null;
 let seq = 0;
-let lastSent = { mx: 0, my: 0, kick: false, at: 0 };
+let lastSent = { mx: 0, my: 0, sprint: false, pass: false, shoot: false, lob: false, at: 0 };
 
 // ---------- menu / lobby wiring ----------
 const nameInput = $('name') as HTMLInputElement;
@@ -185,7 +190,7 @@ function showScreen(which: 'menu' | 'lobby' | 'end' | null) {
   inLobbyUi = which === 'lobby';
   playingNow = which === null;
   updateInputEnabled();
-  $('kick').classList.toggle('hidden', !(playingNow && isTouch));
+  $('actions').classList.toggle('hidden', !(playingNow && isTouch));
   $('cam-btn').classList.toggle('hidden', !(playingNow && isTouch));
   $('hud').classList.toggle('hidden', !playingNow);
 }
@@ -311,8 +316,8 @@ function maybeShowControlsHint() {
   sessionStorage.setItem('elevens-hint', '1');
   hint(
     isTouch
-      ? 'Drag left side to move · KICK: tap = pass, half hold = long pass, full = loft'
-      : 'WASD to move · SPACE: tap = pass, half hold = long pass, full = loft',
+      ? 'Drag left = move · PASS auto-aims · hold SHOOT for power · PASS = tackle when defending'
+      : 'WASD move · SHIFT sprint · SPACE pass · K shoot (hold) · L lob · C camera',
   );
 }
 
@@ -434,6 +439,8 @@ function sampleView(now: number): { view: View; latest: StateMsg } | null {
     x: lerp(older.s.ball.x, newer.s.ball.x, t),
     y: lerp(older.s.ball.y, newer.s.ball.y, t),
     z: lerp(older.s.ball.z, newer.s.ball.z, t),
+    vx: newer.s.ball.vx, // camera look-ahead only — no need to interpolate
+    vy: newer.s.ball.vy,
   };
   return { view: { players, ball }, latest: buf[buf.length - 1].s };
 }
@@ -512,10 +519,24 @@ function tickFrame() {
   const now = performance.now();
   if (playerId && net.connected) {
     const { mx, my } = worldInput();
-    const changed = mx !== lastSent.mx || my !== lastSent.my || input.kick !== lastSent.kick;
+    const changed =
+      mx !== lastSent.mx ||
+      my !== lastSent.my ||
+      input.sprint !== lastSent.sprint ||
+      input.pass !== lastSent.pass ||
+      input.shoot !== lastSent.shoot ||
+      input.lob !== lastSent.lob;
     if (changed || now - lastSent.at > 100) {
-      net.send({ type: 'input', seq: seq++, mx, my, kick: input.kick });
-      lastSent = { mx, my, kick: input.kick, at: now };
+      net.send({
+        type: 'input',
+        seq: seq++,
+        mx, my,
+        sprint: input.sprint,
+        pass: input.pass,
+        shoot: input.shoot,
+        lob: input.lob,
+      });
+      lastSent = { mx, my, sprint: input.sprint, pass: input.pass, shoot: input.shoot, lob: input.lob, at: now };
     }
   }
 
@@ -525,8 +546,7 @@ function tickFrame() {
   (window as any).__refYaw = moveRefYaw;
   // my charge ring uses the LOCAL hold time (zero-latency feel); everyone
   // else's comes from the server snapshot
-  const myCharge = input.kick ? Math.min(1, (now - input.kickHeldSince) / C.KICK_CHARGE_MS) : 0;
-  renderer.update(sampled?.view ?? null, playerId, myCharge);
+  renderer.update(sampled?.view ?? null, playerId, input.localCharge(C.KICK_CHARGE_MS));
   updateHud(sampled?.latest ?? null);
   updateJoystickOverlay();
 
