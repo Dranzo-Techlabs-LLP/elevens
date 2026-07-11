@@ -20,6 +20,7 @@ export interface MoveInput {
   x: number; // desired direction, world space (not necessarily unit)
   z: number;
   sprint: boolean;
+  shield?: boolean; // hold-up play: slow, wide, body between ball and opponent
 }
 
 /** Mutable copy of the movement constants so a debug panel can tune live.
@@ -115,6 +116,8 @@ export class SimPlayer {
       target = input.sprint ? tune.sprintSpeed * tiredMult : tune.jogSpeed;
       target *= mag;
     }
+    // shielding is deliberate: slow, planted steps
+    if (input.shield) target = Math.min(target, 1.6);
 
     // --- turn-rate-capped steering (the turning radius) ---
     this.yawRate = 0;

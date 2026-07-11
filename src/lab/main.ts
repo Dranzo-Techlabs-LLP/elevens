@@ -12,6 +12,7 @@ import { Pane } from 'tweakpane';
 import Stats from 'stats.js';
 import { BALL, MATCH, PITCH_5S } from '../shared/config3d';
 import { SimPlayer, defaultMoveTune } from '../shared/sim3d/player';
+import { defaultControlTune, stepBallControl, type ControlState } from '../shared/sim3d/control';
 import { HumanRig } from './rig';
 
 // live-tunable copy of the aero/ball constants (Tweakpane writes here)
@@ -59,6 +60,14 @@ async function boot() {
   // stamina (isomorphic sim code) driven by WASD+Shift
   const player = new SimPlayer(RAPIER, world, -12, 4);
   const moveTune = defaultMoveTune();
+
+  // M3: ball control state + a static dummy defender to shield against
+  const controlTune = defaultControlTune();
+  const ctlStates: ControlState[] = [{ cooldown: 0 }];
+  let tick = 0;
+  // (positioned OFF the +x feed lane so serves reach the player untouched)
+  const dummyBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(-10.5, 1.82 / 2, 7));
+  world.createCollider(RAPIER.ColliderDesc.capsule((1.82 - 0.6) / 2, 0.3), dummyBody);
 
   // the ball
   const ballBody = world.createRigidBody(
@@ -143,6 +152,11 @@ async function boot() {
   const rig = new HumanRig();
   scene.add(rig.group);
 
+  // dummy defender visual (red) — shield against this
+  const dummyRig = new HumanRig(0xdc2626);
+  dummyRig.group.position.set(-10.5, 0, 7);
+  scene.add(dummyRig.group);
+
   // breadcrumb trail — SEE the turning radius as an arc on the grass
   const TRAIL_N = 240;
   const trailPos = new Float32Array(TRAIL_N * 3);
@@ -167,7 +181,11 @@ async function boot() {
     if (keys.has('KeyS')) x -= 1;
     if (keys.has('KeyD')) z += 1;
     if (keys.has('KeyA')) z -= 1;
-    return { x, z, sprint: keys.has('ShiftLeft') || keys.has('ShiftRight') };
+    return {
+      x, z,
+      sprint: keys.has('ShiftLeft') || keys.has('ShiftRight'),
+      shield: keys.has('KeyE'),
+    };
   }
 
   const camState = { follow: true };
@@ -279,9 +297,25 @@ async function boot() {
     (window as any).__shots.push({ ...s });
   }
 
+  // control telemetry
+  let lastCtl = '—';
+  (window as any).__ctlEvents = [];
+
   // presets
   const $ = (id: string) => document.getElementById(id)!;
   $('p-pass').onclick = () => { resetBall(); kick('Ground pass', 14, 0); };
+  // M3 feeds: serve the ball AT the player to test first touch
+  $('p-feed').onclick = () => {
+    const pp = player.pos;
+    resetBall(pp.x + 9, pp.z);
+    const d = new THREE.Vector3(-1, 0, 0);
+    kick('Feed 12', 12, 0, 0, 0, d);
+  };
+  $('p-feed-hard').onclick = () => {
+    const pp = player.pos;
+    resetBall(pp.x + 12, pp.z);
+    kick('Feed 20', 20, 2, 0, 0, new THREE.Vector3(-1, 0, 0));
+  };
   $('p-driven').onclick = () => { resetBall(); kick('Driven', 22, 4); };
   $('p-lofted').onclick = () => { resetBall(); kick('Lofted+back', 19, 26, 0, -5); };
   $('p-curler').onclick = () => { resetBall(); kick('Curler', 24, 12, 7, 0); };
@@ -332,6 +366,16 @@ async function boot() {
   moveFolder.addBinding(moveTune, 'staminaDrainSprint', { min: 0, max: 0.3, step: 0.005 });
   moveFolder.addBinding(camState, 'follow', { label: 'follow cam' });
 
+  const ctlFolder = pane.addFolder({ title: 'Ball control feel (live)' });
+  ctlFolder.addBinding(controlTune, 'dribbleTouchSpeed', { min: 1.0, max: 1.6, step: 0.01 });
+  ctlFolder.addBinding(controlTune, 'sprintTouchSpeed', { min: 1.1, max: 1.9, step: 0.01 });
+  ctlFolder.addBinding(controlTune, 'touchCooldown', { min: 0.15, max: 0.6, step: 0.01 });
+  ctlFolder.addBinding(controlTune, 'gripSpeed', { min: 2, max: 8, step: 0.1 });
+  ctlFolder.addBinding(controlTune, 'trapKill', { min: 0.4, max: 1, step: 0.01 });
+  ctlFolder.addBinding(controlTune, 'trapKillMoving', { min: 0.2, max: 0.9, step: 0.01 });
+  ctlFolder.addBinding(controlTune, 'trapKillSprint', { min: 0.1, max: 0.7, step: 0.01 });
+  ctlFolder.addBinding(controlTune, 'controlRadius', { min: 0.6, max: 1.4, step: 0.02 });
+
   const stats = new Stats();
   stats.showPanel(0);
   document.body.appendChild(stats.dom);
@@ -349,7 +393,26 @@ async function boot() {
 
     while (acc >= DT) {
       acc -= DT;
-      player.step(DT, readInput(), moveTune);
+      tick++;
+      const inp = readInput();
+      player.step(DT, inp, moveTune);
+      const ctlEvents = stepBallControl(
+        DT, tick, ballBody, [player], ctlStates, [!!inp.shield], controlTune,
+      );
+      {
+        // control debug: min ball distance + cooldown state, sampled per tick
+        const _b = ballBody.translation();
+        const _p = player.pos;
+        const _d = Math.hypot(_b.x - _p.x, _b.z - _p.z);
+        const dbg = ((window as any).__ctlDbg ??= { minDist: 99, cooldown: 0, bandTicks: 0 });
+        dbg.minDist = Math.min(dbg.minDist, _d);
+        dbg.cooldown = ctlStates[0].cooldown;
+        if (_d < controlTune.controlRadius) dbg.bandTicks++;
+      }
+      for (const ev of ctlEvents) {
+        lastCtl = `${ev.type} @ ${ev.intensity.toFixed(1)} m/s`;
+        (window as any).__ctlEvents.push({ ...ev, tick });
+      }
       applyAero();
       world.step();
 
@@ -389,7 +452,9 @@ async function boot() {
       speed: player.speed,
       yawRate: player.yawRate,
       stamina: player.stamina,
+      shield: keys.has('KeyE'),
     });
+    dummyRig.update(DT, { speed: 0, yawRate: 0, stamina: 1 });
     trailTimer += DT;
     if (trailTimer > 0.05) {
       trailTimer = 0;
@@ -405,6 +470,8 @@ async function boot() {
       speed: player.speed,
       stamina: player.stamina,
       yawRate: player.yawRate,
+      sep: Math.hypot(bp.x - pp.x, bp.z - pp.z), // ball-player separation
+      ballSpeed: Math.hypot(ballBody.linvel().x, ballBody.linvel().z),
     };
 
     // camera: follow behind travel dir, or free orbit
@@ -421,8 +488,8 @@ async function boot() {
     const v = ballBody.linvel();
     const speed = Math.hypot(v.x, v.y, v.z);
     liveEl.textContent =
-      `ball ${speed.toFixed(1)} m/s · h ${(bp.y - BALL.radius).toFixed(2)}m — ` +
-      `player ${player.speed.toFixed(1)} m/s · stamina ${(player.stamina * 100).toFixed(0)}%`;
+      `ball ${speed.toFixed(1)} m/s · sep ${(window as any).__move.sep.toFixed(2)}m — ` +
+      `player ${player.speed.toFixed(1)} m/s · stam ${(player.stamina * 100).toFixed(0)}% · last: ${lastCtl}`;
 
     renderer.render(scene, camera);
     stats.end();

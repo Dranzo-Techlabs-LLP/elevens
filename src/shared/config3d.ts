@@ -81,15 +81,36 @@ export const MATCH = {
   labTickRate: 60,       // physics lab runs finer for feel evaluation
 } as const;
 
-// ---------- BALL CONTROL / TOUCH MODEL (M3 consumers, tuned in lab) ----------
+// ---------- BALL CONTROL / TOUCH MODEL ----------
+// The whole feel of the game. The ball is NEVER parented/glued: control is a
+// sequence of physical impulses — a trap kills incoming velocity, dribble
+// touches nudge it ahead, and between touches the ball obeys pure physics.
 export const TOUCH = {
   controlRadius: 0.9,    // m — reachable ball distance for a touch
-  dribbleTouchSpeed: 1.15, // knock-on impulse as a multiple of player speed
-  dribbleTouchAhead: 0.55, // m ahead of feet a touch aims at jog
-  sprintTouchAhead: 1.6,   // m ahead at full sprint (big touches, less control)
-  trapKill: 0.85,        // fraction of incoming velocity killed by a good trap
-  trapKillMoving: 0.55,  // trap quality while running
-  touchCooldown: 0.28,   // s between dribble contacts
+  ballMaxHeight: 0.5,    // m — above this the ball is out of ground-control reach
+  gripSpeed: 4.0,        // m/s relative speed below which dribble touches engage
+                         // (faster balls must be trapped first)
+
+  // dribble touches: ball velocity set to player direction * player speed *
+  // touchSpeed. >1 means the ball runs ahead and you chase onto it.
+  dribbleTouchSpeed: 1.16,
+  sprintTouchSpeed: 1.42, // sprinting: much bigger knock-ons
+  touchCooldown: 0.28,    // s between contacts at jog
+  sprintTouchCooldown: 0.38,
+  touchErrorDeg: 4,       // aim noise per touch (deterministic rng)
+  sprintErrorDeg: 9,      // sprint touches are wilder
+  tiredErrorDeg: 14,      // added at zero stamina
+
+  // first touch / trap: fraction of incoming relative velocity KILLED.
+  // standing + composed = ball dies at your feet; at sprint it bounces off.
+  trapKill: 0.85,
+  trapKillMoving: 0.55,
+  trapKillSprint: 0.32,
+  trapCooldown: 0.22,
+
+  // shielding: slow, wide stance between opponent and ball
+  shieldSpeed: 1.6,       // m/s cap while shielding
+  shieldRadiusBonus: 0.25 // extra control reach while shielding
 } as const;
 
 // ---------- KICKS (M4 consumers) ----------

@@ -17,6 +17,7 @@ export interface LocoState {
   speed: number;    // m/s ground speed
   yawRate: number;  // rad/s, for lean-into-turn
   stamina: number;  // 0..1 — tired players pump arms less, lean more
+  shield?: boolean; // wide-arm hold-up stance
   kick?: boolean;   // one-shot trigger
 }
 
@@ -148,12 +149,23 @@ export class HumanRig {
       this.legR.joint.rotation.z = -0.3 * k;
     }
 
-    // arms counter-swing; tired players pump less
-    const armAmp = amp * (0.55 + 0.35 * s.stamina);
-    this.armL.root.rotation.z = alt * armAmp;
-    this.armR.root.rotation.z = sn * armAmp;
-    this.armL.joint.rotation.z = -0.55 - amp * 0.4;
-    this.armR.joint.rotation.z = -0.55 - amp * 0.4;
+    // arms counter-swing; tired players pump less; shielding spreads them wide
+    if (s.shield) {
+      this.armL.root.rotation.z = 0.15;
+      this.armR.root.rotation.z = 0.15;
+      this.armL.root.rotation.x = -1.15; // out sideways
+      this.armR.root.rotation.x = 1.15;
+      this.armL.joint.rotation.z = -0.25;
+      this.armR.joint.rotation.z = -0.25;
+    } else {
+      this.armL.root.rotation.x = 0;
+      this.armR.root.rotation.x = 0;
+      const armAmp = amp * (0.55 + 0.35 * s.stamina);
+      this.armL.root.rotation.z = alt * armAmp;
+      this.armR.root.rotation.z = sn * armAmp;
+      this.armL.joint.rotation.z = -0.55 - amp * 0.4;
+      this.armR.joint.rotation.z = -0.55 - amp * 0.4;
+    }
 
     // forward lean with speed (+ extra when gassed), bank into turns
     const runFrac = Math.min(1, speed / PLAYER.sprintSpeed);
