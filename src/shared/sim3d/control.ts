@@ -102,7 +102,7 @@ export function stepBallControl(
       ball.setAngvel({ x: w.x * 0.25, y: w.y * 0.25, z: w.z * 0.25 }, true);
       st.cooldown = tune.trapCooldown;
       events.push({ type: 'trap', playerIndex: i, intensity: relSpeed });
-    } else if (plSpeed > 0.4) {
+    } else if (plSpeed > 0.4 && dist > tune.collectRadius) {
       // ---- DRIBBLE TOUCH ----
       // nudge along travel direction with speed- and fatigue-scaled error
       const baseDir = Math.atan2(pl.velZ, pl.velX);
@@ -117,8 +117,24 @@ export function stepBallControl(
       st.cooldown = sprinting ? tune.sprintTouchCooldown : tune.touchCooldown;
       events.push({ type: 'touch', playerIndex: i, intensity: plSpeed });
     }
-    // slow ball + slow player inside reach: leave it — walking up to a dead
-    // ball shouldn't teleport it; your next movement tick will touch it
+    // ---- SOFT COLLECT (no cooldown, no glue) ----
+    // a close, slow ball is EASED toward a spot ahead of the feet with a
+    // capped acceleration. This is the PES-smooth carry between touches:
+    // the ball still obeys physics (an opponent's poke still wins it), it
+    // just stops ping-ponging off your shins.
+    if (dist <= tune.collectRadius && relSpeed < tune.gripSpeed && plSpeed > 0.3) {
+      const dirYaw = Math.atan2(pl.velZ, pl.velX);
+      const tx = pl.pos.x + Math.cos(dirYaw) * tune.collectLead;
+      const tz = pl.pos.z + Math.sin(dirYaw) * tune.collectLead;
+      const wantVX = pl.velX + (tx - bp.x) * 6;
+      const wantVZ = pl.velZ + (tz - bp.z) * 6;
+      const dvx = wantVX - bv.x;
+      const dvz = wantVZ - bv.z;
+      const dvLen = Math.hypot(dvx, dvz);
+      const maxDv = tune.collectAccel * dt;
+      const k2 = dvLen > maxDv ? maxDv / dvLen : 1;
+      ball.setLinvel({ x: bv.x + dvx * k2, y: bv.y, z: bv.z + dvz * k2 }, true);
+    }
   }
   return events;
 }

@@ -41,10 +41,15 @@ export class HumanRig {
   /** extra body pitch (rad) — slide = throw the body low, stun = slump */
   extraPitch = 0;
 
-  constructor(jerseyColor = 0x2563eb) {
+  constructor(jerseyColor = 0x2563eb, seed = 0) {
+    const SKINS = [0xf1c27d, 0xe0ac69, 0xc68642, 0x8d5524, 0xffdbac, 0xba8a63];
+    const HAIRS = [0x201a16, 0x3b2a1a, 0x101010, 0x5b3b1a, 0x6e6e6e];
+    const skinTone = SKINS[Math.abs(seed) % SKINS.length];
+    const hairTone = HAIRS[Math.abs(seed >> 2) % HAIRS.length];
     const jersey = new THREE.MeshStandardMaterial({ color: jerseyColor, roughness: 0.7 });
     const shorts = new THREE.MeshStandardMaterial({ color: 0x111c3f, roughness: 0.7 });
-    const skin = new THREE.MeshStandardMaterial({ color: 0xd7a06b, roughness: 0.75 });
+    const skin = new THREE.MeshStandardMaterial({ color: skinTone, roughness: 0.75 });
+    const hairMat = new THREE.MeshStandardMaterial({ color: hairTone, roughness: 0.9 });
     const boots = new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.5 });
 
     this.group.add(this.lean);
@@ -98,22 +103,35 @@ export class HumanRig {
     torso.castShadow = true;
     this.lean.add(torso);
 
-    // arms: shoulder at 1.5
-    this.armL = mkLimb(-0.28, 1.5, 0.32, 0.3, 0.062, 0.05, jersey, skin);
-    this.armR = mkLimb(0.28, 1.5, 0.32, 0.3, 0.062, 0.05, jersey, skin);
+    // arms: shoulder at 1.5, rounded shoulder caps + hands
+    this.armL = mkLimb(-0.26, 1.5, 0.32, 0.3, 0.058, 0.048, jersey, skin);
+    this.armR = mkLimb(0.26, 1.5, 0.32, 0.3, 0.058, 0.048, jersey, skin);
+    for (const side of [-0.26, 0.26]) {
+      const cap = new THREE.Mesh(new THREE.SphereGeometry(0.085, 12, 10), jersey);
+      cap.position.set(0, 1.5, side);
+      this.lean.add(cap);
+    }
+    for (const limb of [this.armL, this.armR]) {
+      const hand = new THREE.Mesh(new THREE.SphereGeometry(0.055, 10, 8), skin);
+      hand.position.y = -0.31;
+      limb.joint.add(hand);
+    }
 
-    const head = new THREE.Mesh(
-      new THREE.SphereGeometry(0.115, 16, 12),
-      new THREE.MeshStandardMaterial({ color: 0xd7a06b, roughness: 0.75 }),
-    );
+    // neck + head + hair
+    const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 0.09, 10), skin);
+    neck.position.y = 1.585;
+    this.lean.add(neck);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.115, 18, 14), skin);
+    head.scale.set(0.92, 1.08, 0.95);
     head.position.y = 1.72;
     head.castShadow = true;
     this.lean.add(head);
     const hair = new THREE.Mesh(
-      new THREE.SphereGeometry(0.12, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.55),
-      new THREE.MeshStandardMaterial({ color: 0x2a1e14, roughness: 0.9 }),
+      new THREE.SphereGeometry(0.118, 18, 12, 0, Math.PI * 2, 0, Math.PI * 0.55),
+      hairMat,
     );
-    hair.position.y = 1.72;
+    hair.position.y = 1.725;
+    hair.scale.set(0.95, 1.05, 0.98);
     hair.rotation.z = -0.45;
     this.lean.add(hair);
   }

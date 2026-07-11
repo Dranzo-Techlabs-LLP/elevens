@@ -110,6 +110,12 @@ export function stepActions(ctx: ActionCtx, inputs: ActionInput[]) {
       const fire = (kind: 'pass' | 'through' | 'shoot' | 'lob', charge = 0) => {
         if (tick < st.kickCooldownUntil || st.pending) return;
         st.pending = { tick: tick + delayTicks, kind, charge, yaw: pl.yaw };
+        // plant touch: settle the ball during the windup so the strike is
+        // clean — how pros take a touch before hitting it
+        if (distToBall < 1.4 && ballPlayable) {
+          const bv = ball.linvel();
+          ball.setLinvel({ x: bv.x * 0.45 + pl.velX * 0.3, y: bv.y * 0.5, z: bv.z * 0.45 + pl.velZ * 0.3 }, true);
+        }
       };
       if (!inp.pass && st.prevPass) fire('pass');
       if (!inp.through && st.prevThrough) fire('through');

@@ -177,6 +177,13 @@ const moveTune = defaultMoveTune();
 let seq = 0;
 const pending: { seq: number; inp: ReturnType<typeof readInput> }[] = [];
 let shootHeldLocal = 0;
+// visual smoothing: the sim steps at 30Hz but we render at 60-120 — the local
+// player is interpolated between the previous and current sim tick, and its
+// yaw/speed are filtered so the animation doesn't stutter at tick rate
+const prevTickState = { x: 0, z: 0, yaw: 0 };
+const currTickState = { x: 0, z: 0, yaw: 0 };
+let visYaw = 0;
+let visSpeed = 0;
 
 function initLocalSim() {
   localWorld = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
@@ -194,8 +201,14 @@ function initLocalSim() {
 
 function predictTick(inp: ReturnType<typeof readInput>) {
   if (!localMe || !localWorld) return;
+  prevTickState.x = localMe.pos.x;
+  prevTickState.z = localMe.pos.z;
+  prevTickState.yaw = localMe.yaw;
   localMe.step(DT, { x: inp.mx, z: inp.mz, sprint: inp.sprint, shield: inp.shield }, moveTune);
   localWorld.step();
+  currTickState.x = localMe.pos.x;
+  currTickState.z = localMe.pos.z;
+  currTickState.yaw = localMe.yaw;
   if (inp.shoot) shootHeldLocal += DT * 1000;
   else shootHeldLocal = 0;
 }
@@ -391,7 +404,9 @@ function label(text: string) {
 function getModel(id: string, name: string, team: 'A' | 'B') {
   let m = models.get(id);
   if (!m) {
-    const rig = new HumanRig(team === 'A' ? 0x2563eb : 0xdc2626);
+    let seed = 0;
+    for (let i = 0; i < id.length; i++) seed = (seed * 31 + id.charCodeAt(i)) | 0;
+    const rig = new HumanRig(team === 'A' ? 0x2563eb : 0xdc2626, seed);
     scene.add(rig.group);
     const lb = label(name);
     lb.position.y = 2.15;
@@ -595,11 +610,28 @@ function frame() {
         ? (nameInput.value.trim() || 'You')
         : (lobbyNames.get(p.id) ?? (p.id.startsWith('bot-') ? p.id.replace(/bot-\d-/, 'Bot ') : p.id));
       const m = getModel(p.id, name, team);
-      // OWN player renders from the local prediction; remotes from interp
-      const px = isMe && localMe ? localMe.pos.x : p.x;
-      const pz = isMe && localMe ? localMe.pos.z : p.z;
-      const pyaw = isMe && localMe ? localMe.yaw : p.yaw;
-      const spd = isMe && localMe ? localMe.speed : Math.hypot(p.vx, p.vz);
+      // OWN player renders from the local prediction, INTERPOLATED between
+      // sim ticks (alpha = accumulator progress) with filtered yaw/speed —
+      // this is what makes movement read smooth at any display Hz
+      let px: number, pz: number, pyaw: number, spd: number;
+      if (isMe && localMe) {
+        const alpha = Math.min(1, acc / DT);
+        px = prevTickState.x + (currTickState.x - prevTickState.x) * alpha;
+        pz = prevTickState.z + (currTickState.z - prevTickState.z) * alpha;
+        let dy = currTickState.yaw - visYaw;
+        while (dy > Math.PI) dy -= Math.PI * 2;
+        while (dy < -Math.PI) dy += Math.PI * 2;
+        visYaw += dy * (1 - Math.exp(-14 * dtReal));
+        pyaw = visYaw;
+        visSpeed += (localMe.speed - visSpeed) * (1 - Math.exp(-8 * dtReal));
+        spd = visSpeed;
+      } else {
+        px = p.x;
+        pz = p.z;
+        pyaw = p.yaw;
+        spd = Math.hypot(p.vx, p.vz);
+      }
+      if (isMe) { myVisX = px; myVisZ = pz; }
       m.rig.group.position.set(px, 0, pz);
       m.rig.group.rotation.y = -pyaw;
       m.rig.extraPitch = p.sliding ? -1.15 : p.stunned ? 0.35 : 0;
@@ -624,10 +656,10 @@ function frame() {
     const meSnap = view.latest.players.find((p) => p.id === myId);
     if (meSnap) ($('stam') as HTMLElement).style.width = `${Math.round(meSnap.stamina * 100)}%`;
 
-    // camera
+    // camera (follows the INTERPOLATED body)
     const me = localMe;
-    const mx = me ? me.pos.x : view.ball.x;
-    const mz = me ? me.pos.z : view.ball.z;
+    const mx = me ? myVisX : view.ball.x;
+    const mz = me ? myVisZ : view.ball.z;
     if (me) {
       let d = Math.atan2(me.velZ, me.velX);
       if (me.speed < 0.5) d = me.yaw;
@@ -646,7 +678,9 @@ function frame() {
       camera.lookAt(camTarget.x, 0.4, camTarget.z - 1.5);
     } else if (camMode === 1) {
       const fx = Math.cos(camYaw), fz = Math.sin(camYaw);
-      camera.position.set(mx - fx * 5.4, 3.2, mz - fz * 5.4);
+      // smoothed chase — hard-setting the position transmits every sim step
+      camPos.set(mx - fx * 5.4, 3.2, mz - fz * 5.4);
+      camera.position.lerp(camPos, 1 - Math.exp(-12 * dtReal));
       camera.lookAt(mx + fx * 3.5, 0.7, mz + fz * 3.5);
     } else if (camMode === 2) {
       const fx = Math.cos(camYaw), fz = Math.sin(camYaw);
@@ -674,6 +708,9 @@ function frame() {
   requestAnimationFrame(frame);
 }
 const camTarget = new THREE.Vector3(0, 0, 0);
+const camPos = new THREE.Vector3(0, 10, 14);
+let myVisX = 0;
+let myVisZ = 0;
 
 // lobby caches (names/teams of humans for rendering)
 const lobbyTeams = new Map<string, 'A' | 'B'>();
