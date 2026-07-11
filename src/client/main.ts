@@ -2,7 +2,7 @@ import { CONFIG as C } from '../shared/config';
 import type { Phase, PlayerSnap, Team } from '../shared/protocol';
 import { Net, type StateMsg } from './net';
 import { Input } from './input';
-import { Renderer3D, type View } from './render3d';
+import { CAM_MODES, Renderer3D, type CamMode, type View } from './render3d';
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
 const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -170,16 +170,96 @@ $('rematch').onclick = () => {
   $('rematch-note').textContent = 'Waiting for the others…';
 };
 
+let playingNow = false;
+let settingsOpen = false;
+
+function updateInputEnabled() {
+  // gameplay input pauses while the settings overlay is up
+  input.enabled = playingNow && !settingsOpen;
+}
+
 function showScreen(which: 'menu' | 'lobby' | 'end' | null) {
   $('menu').classList.toggle('hidden', which !== 'menu');
   $('lobby').classList.toggle('hidden', which !== 'lobby');
   $('end').classList.toggle('hidden', which !== 'end');
   inLobbyUi = which === 'lobby';
-  const playing = which === null;
-  input.enabled = playing;
-  $('kick').classList.toggle('hidden', !(playing && isTouch));
-  $('hud').classList.toggle('hidden', !playing);
+  playingNow = which === null;
+  updateInputEnabled();
+  $('kick').classList.toggle('hidden', !(playingNow && isTouch));
+  $('cam-btn').classList.toggle('hidden', !(playingNow && isTouch));
+  $('hud').classList.toggle('hidden', !playingNow);
 }
+
+// ---------- settings (camera view, zoom, names, quality) ----------
+interface Settings {
+  cam: CamMode;
+  zoom: number;
+  names: boolean;
+  quality: 'high' | 'low';
+}
+const settings: Settings = {
+  cam: 'broadcast',
+  zoom: 1,
+  names: true,
+  quality: 'high',
+  ...JSON.parse(localStorage.getItem('elevens-settings') ?? '{}'),
+};
+
+function applySettings(save = true) {
+  renderer.setCamMode(settings.cam);
+  renderer.setZoom(settings.zoom);
+  renderer.setShowNames(settings.names);
+  renderer.setQuality(settings.quality);
+  // sync the panel controls
+  const radio = document.querySelector<HTMLInputElement>(`#cam-opts input[value="${settings.cam}"]`);
+  if (radio) radio.checked = true;
+  ($('set-zoom') as HTMLInputElement).value = String(settings.zoom);
+  ($('set-names') as HTMLInputElement).checked = settings.names;
+  ($('set-quality') as HTMLSelectElement).value = settings.quality;
+  if (save) localStorage.setItem('elevens-settings', JSON.stringify(settings));
+}
+
+function cycleCam() {
+  const idx = CAM_MODES.findIndex((m) => m.id === settings.cam);
+  const next = CAM_MODES[(idx + 1) % CAM_MODES.length];
+  settings.cam = next.id;
+  applySettings();
+  hint(`Camera: ${next.label}`, 1400);
+}
+
+$('settings-btn').onclick = () => {
+  settingsOpen = true;
+  $('settings').classList.remove('hidden');
+  updateInputEnabled();
+};
+$('settings-close').onclick = () => {
+  settingsOpen = false;
+  $('settings').classList.add('hidden');
+  updateInputEnabled();
+};
+$('cam-btn').onclick = () => cycleCam();
+for (const r of document.querySelectorAll<HTMLInputElement>('#cam-opts input')) {
+  r.onchange = () => {
+    settings.cam = r.value as CamMode;
+    applySettings();
+  };
+}
+($('set-zoom') as HTMLInputElement).oninput = (e) => {
+  settings.zoom = Number((e.target as HTMLInputElement).value);
+  applySettings();
+};
+($('set-names') as HTMLInputElement).onchange = (e) => {
+  settings.names = (e.target as HTMLInputElement).checked;
+  applySettings();
+};
+($('set-quality') as HTMLSelectElement).onchange = (e) => {
+  settings.quality = (e.target as HTMLSelectElement).value as Settings['quality'];
+  applySettings();
+};
+addEventListener('keydown', (e) => {
+  if (e.code === 'KeyC' && playingNow && !settingsOpen) cycleCam();
+});
+applySettings(false);
 
 // ---------- server messages ----------
 type LobbyMsg = Extract<import('../shared/protocol').ServerMsg, { type: 'lobby' }>;

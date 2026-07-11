@@ -126,6 +126,27 @@
     background: #000;
   }
 
+  /* settings */
+  #settings { z-index: 22; }
+  #settings .card { max-width: 460px; width: 90vw; }
+  #settings .opts label { display: block; padding: 3px 0; }
+  #settings .mini { font-size: 12px; color: #a7c4ae; font-weight: 400; }
+  #settings input[type="radio"], #settings input[type="checkbox"] { accent-color: #22c55e; }
+  #settings select { font-size: 14px; border-radius: 6px; padding: 3px 6px; }
+  #settings-btn, #cam-btn {
+    position: fixed;
+    width: 46px; height: 46px;
+    border-radius: 50%;
+    background: rgba(0,0,0,0.35);
+    border: 1px solid rgba(255,255,255,0.3);
+    font-size: 20px;
+    z-index: 7;
+    display: flex; align-items: center; justify-content: center;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #settings-btn { top: max(10px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right)); }
+  #cam-btn { top: max(66px, calc(env(safe-area-inset-top) + 56px)); right: max(12px, env(safe-area-inset-right)); }
+
   #help { z-index: 20; }
   #help .card {
     background: rgba(255,255,255,0.06);
@@ -232,6 +253,9 @@
     <b>half&nbsp;hold</b>&nbsp;=&nbsp;driven long pass ·
     <b>full&nbsp;hold</b>&nbsp;=&nbsp;lofted ball / shot.
     Kicks go where you're facing. Stand in the path to block or trap it.</p>
+    <p style="margin-top:10px"><b>Camera</b><br>
+    Press <kbd>C</kbd> (or the 🎥 button) to cycle: Broadcast → Third person →
+    First person → Overhead. More options in ⚙️ Settings.</p>
   </div>
   <button id="help-close">Got it</button>
 </div>
@@ -261,6 +285,39 @@
 <div id="hud" class="hidden">
   <div id="hud-score"></div>
   <div class="sub"><span id="hud-room"></span> · <span id="hud-ping"></span></div>
+</div>
+
+<button id="settings-btn" class="ui" title="Settings">⚙️</button>
+<button id="cam-btn" class="ui hidden" title="Switch camera">🎥</button>
+
+<div id="settings" class="overlay hidden">
+  <h2>Settings</h2>
+  <div class="card">
+    <p><b>Camera view</b> <span class="mini">(<kbd>C</kbd> or 🎥 cycles in-game)</span></p>
+    <div id="cam-opts" class="opts">
+      <label><input type="radio" name="cam" value="broadcast"> Broadcast — TV-style side view</label>
+      <label><input type="radio" name="cam" value="third"> Third person — behind your player</label>
+      <label><input type="radio" name="cam" value="first"> First person — through your eyes</label>
+      <label><input type="radio" name="cam" value="overhead"> Overhead — tactical top-down</label>
+    </div>
+    <p style="margin-top:10px"><b>Camera zoom</b></p>
+    <input type="range" id="set-zoom" min="0.7" max="1.4" step="0.05" style="width:100%">
+    <label style="display:block;margin-top:10px"><input type="checkbox" id="set-names"> Show player names</label>
+    <label style="display:block;margin-top:6px">Graphics
+      <select id="set-quality">
+        <option value="high">High</option>
+        <option value="low">Low (older phones)</option>
+      </select>
+    </label>
+  </div>
+  <div class="card">
+    <p><b>Controls</b></p>
+    <p><b>Desktop:</b> <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>/arrows move ·
+       <kbd>SPACE</kbd> hold &amp; release to kick · <kbd>C</kbd> camera</p>
+    <p><b>Phone:</b> drag left half to move · hold <b>KICK</b>, release to strike · 🎥 camera</p>
+    <p><b>Kick charge:</b> tap = short pass · half hold = driven long pass · full hold = loft / shot</p>
+  </div>
+  <button id="settings-close">Done</button>
 </div>
 <div id="joy-base" style="display:none"></div>
 <div id="joy-knob" style="display:none"></div>

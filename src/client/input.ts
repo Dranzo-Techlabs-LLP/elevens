@@ -59,6 +59,10 @@ export class Input {
 
   private touchStart(e: TouchEvent) {
     if (!this.enabled) return;
+    // taps on buttons/overlays (settings gear, cam switch, menus) must reach
+    // them — only raw pitch touches become joystick input
+    const target = e.target as HTMLElement | null;
+    if (target?.closest?.('.ui, .overlay, button')) return;
     e.preventDefault();
     for (const t of Array.from(e.changedTouches)) {
       // left ~55% of the screen spawns the joystick where the finger lands
@@ -72,7 +76,7 @@ export class Input {
   }
 
   private touchMove(e: TouchEvent) {
-    if (!this.enabled) return;
+    if (!this.enabled || this.joyTouchId === null) return;
     e.preventDefault();
     for (const t of Array.from(e.changedTouches)) {
       if (t.identifier === this.joyTouchId) {

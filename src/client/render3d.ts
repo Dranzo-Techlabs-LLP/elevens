@@ -9,6 +9,14 @@ const TEAM_COLOR: Record<Team, number> = { A: 0x2563eb, B: 0xdc2626 };
 const SHORTS_COLOR: Record<Team, number> = { A: 0x1e3a8a, B: 0x7f1d1d };
 const SKIN = 0xd9a066;
 
+export type CamMode = 'broadcast' | 'third' | 'first' | 'overhead';
+export const CAM_MODES: { id: CamMode; label: string }[] = [
+  { id: 'broadcast', label: 'Broadcast' },
+  { id: 'third', label: 'Third person' },
+  { id: 'first', label: 'First person' },
+  { id: 'overhead', label: 'Overhead' },
+];
+
 interface ViewPlayer extends PlayerSnap {}
 export interface View {
   players: ViewPlayer[];
@@ -107,9 +115,10 @@ class PlayerModel {
     });
   }
 
-  update(p: ViewPlayer, charge: number, highlight: boolean, dt: number) {
+  update(p: ViewPlayer, charge: number, highlight: boolean, dt: number, showName: boolean) {
     this.group.position.set(p.x, 0, p.y);
     this.group.rotation.y = -p.dir;
+    this.label.visible = showName;
 
     // run cycle: swing speed follows actual velocity
     const speed = Math.hypot(p.vx, p.vy);
@@ -215,7 +224,24 @@ export class Renderer3D {
   private ball: THREE.Mesh;
   private ballShadow: THREE.Mesh;
   private camTarget = new THREE.Vector3(C.PITCH_W / 2, 0, C.PITCH_H / 2);
+  private camMode: CamMode = 'broadcast';
+  private camYaw = 0; // smoothed facing used by third/first person cams
+  private zoom = 1;
+  private showNames = true;
   private lastTime = performance.now();
+
+  setCamMode(m: CamMode) {
+    this.camMode = m;
+  }
+  setZoom(z: number) {
+    this.zoom = z;
+  }
+  setShowNames(b: boolean) {
+    this.showNames = b;
+  }
+  setQuality(q: 'high' | 'low') {
+    this.renderer.setPixelRatio(q === 'low' ? 1 : Math.min(devicePixelRatio || 1, 1.75));
+  }
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -372,7 +398,9 @@ export class Renderer3D {
     const dt = Math.min(0.1, (now - this.lastTime) / 1000);
     this.lastTime = now;
 
+    let me: ViewPlayer | undefined;
     if (view) {
+      me = view.players.find((p) => p.id === myId);
       const seen = new Set<string>();
       for (const p of view.players) {
         seen.add(p.id);
@@ -391,7 +419,9 @@ export class Renderer3D {
           else this.faces.set(p.id, want);
         }
         const charge = p.id === myId ? myCharge : p.charge;
-        model.update(p, charge, p.id === myId, dt);
+        model.update(p, charge, p.id === myId, dt, this.showNames);
+        // in first person you ARE the model — hide it so it doesn't block the lens
+        model.group.visible = !(this.camMode === 'first' && p.id === myId && me);
       }
       for (const [id, model] of this.players) {
         if (!seen.has(id)) {
@@ -409,17 +439,56 @@ export class Renderer3D {
       this.ballShadow.scale.setScalar(sh);
       (this.ballShadow.material as THREE.MeshBasicMaterial).opacity = 0.3 * sh;
 
-      // camera: smooth broadcast follow of my player (ball when spectating),
-      // biased toward the ball so the action stays in frame
-      const me = view.players.find((p) => p.id === myId);
+      // shared follow target for broadcast/overhead: my player biased toward
+      // the ball so the action stays in frame (ball only when spectating)
       const fx = me ? me.x * 0.65 + b.x * 0.35 : b.x;
       const fy = me ? me.y * 0.65 + b.y * 0.35 : b.y;
       this.camTarget.lerp(new THREE.Vector3(fx, 0, fy), 1 - Math.exp(-4 * dt));
+
+      // smoothed yaw for the follow cams — raw dir snaps with input, the
+      // camera easing it out is what keeps FP/3P watchable
+      if (me) {
+        let d = me.dir - this.camYaw;
+        while (d > Math.PI) d -= Math.PI * 2;
+        while (d < -Math.PI) d += Math.PI * 2;
+        this.camYaw += d * (1 - Math.exp(-(this.camMode === 'first' ? 10 : 7) * dt));
+      }
     }
 
-    const t = this.camTarget;
-    this.camera.position.set(t.x, 430, t.z + 330);
-    this.camera.lookAt(t.x, 10, t.z - 40);
+    this.placeCamera(me);
     this.renderer.render(this.scene, this.camera);
+  }
+
+  private placeCamera(me: ViewPlayer | undefined) {
+    const t = this.camTarget;
+    const z = this.zoom;
+    const mode = me ? this.camMode : 'broadcast'; // spectators get broadcast
+    const fx = Math.cos(this.camYaw), fz = Math.sin(this.camYaw);
+
+    switch (mode) {
+      case 'third':
+        // over-the-shoulder action cam, trailing the smoothed facing
+        this.camera.position.set(
+          me!.x - fx * 150 * z,
+          100 * z,
+          me!.y - fz * 150 * z,
+        );
+        this.camera.lookAt(me!.x + fx * 90, 18, me!.y + fz * 90);
+        break;
+      case 'first':
+        // eye height, slightly ahead of the head so the body never clips
+        this.camera.position.set(me!.x + fx * 8, 30, me!.y + fz * 8);
+        this.camera.lookAt(me!.x + fx * 130, 20, me!.y + fz * 130);
+        break;
+      case 'overhead':
+        // tactical top-down (tiny z offset keeps lookAt from degenerating)
+        this.camera.position.set(t.x, 720 * z, t.z + 1);
+        this.camera.lookAt(t.x, 0, t.z);
+        break;
+      default:
+        // broadcast: elevated side follow
+        this.camera.position.set(t.x, 430 * z, t.z + 330 * z);
+        this.camera.lookAt(t.x, 10, t.z - 40);
+    }
   }
 }
