@@ -6,5 +6,6 @@ dist/
 .claude/
 .DS_Store
 assets/raw/
-public/assets/
+assets/quaternius-src/
+public/assets/mixamo/
 dist-web/

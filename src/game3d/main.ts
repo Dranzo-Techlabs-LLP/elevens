@@ -14,6 +14,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import { BALL, MATCH, PITCH_5S, PLAYER } from '../shared/config3d';
 import { SimPlayer, defaultMoveTune } from '../shared/sim3d/player';
 import { HumanRig } from '../lab/rig';
+import { CharModel, charsReady, loadChars } from './chars';
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
 const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -387,8 +388,9 @@ const ballShadow = (() => {
   return m;
 })();
 
-// player models
-interface Model { rig: HumanRig; label: THREE.Sprite; ring: THREE.Mesh; ringMat: THREE.MeshBasicMaterial; }
+// player models — real rigged characters when the GLB loaded, procedural
+// fallback otherwise. Both expose the same update/trigger surface.
+interface Model { rig: HumanRig | CharModel; label: THREE.Sprite; ring: THREE.Mesh; ringMat: THREE.MeshBasicMaterial; }
 const models = new Map<string, Model>();
 function label(text: string) {
   const c = document.createElement('canvas');
@@ -406,7 +408,9 @@ function getModel(id: string, name: string, team: 'A' | 'B') {
   if (!m) {
     let seed = 0;
     for (let i = 0; i < id.length; i++) seed = (seed * 31 + id.charCodeAt(i)) | 0;
-    const rig = new HumanRig(team === 'A' ? 0x2563eb : 0xdc2626, seed);
+    const rig = charsReady()
+      ? new CharModel(team)
+      : new HumanRig(team === 'A' ? 0x2563eb : 0xdc2626, seed);
     scene.add(rig.group);
     const lb = label(name);
     lb.position.y = 2.15;
@@ -524,6 +528,10 @@ function onMsg(m: any) {
       if (m.kind === 'kickoff') { winner = null; banner('KICKOFF', 900); }
       if (m.kind === 'end') winner = m.winner;
       if (m.kind === 'foul') banner('FOUL!', 1000);
+      if (m.kind === 'kick' && m.id) {
+        const mdl = models.get(m.id);
+        if (mdl && 'triggerKick' in mdl.rig) (mdl.rig as any).triggerKick();
+      }
       break;
     case 'error':
       $('menu-err').textContent = m.msg;
@@ -640,7 +648,9 @@ function frame() {
         yawRate: isMe && localMe ? localMe.yawRate : 0,
         stamina: p.stamina,
         shield: p.shielding,
-      });
+        sliding: p.sliding,
+        stunned: p.stunned,
+      } as any);
       const charge = isMe ? Math.min(1, shootHeldLocal / 900) : p.charge;
       m.ringMat.opacity = charge > 0.02 ? 0.35 + 0.6 * charge : 0;
       m.ringMat.color.setHSL(0.15 - 0.15 * charge, 1, 0.55);
@@ -725,7 +735,7 @@ addEventListener('resize', resize);
 
 // ---------------- boot ----------------
 (async () => {
-  await RAPIER.init();
+  await Promise.all([RAPIER.init(), loadChars()]);
   initLocalSim();
   resize();
   showScreen('menu');
