@@ -146,6 +146,28 @@
     font-size: 13px;
   }
 
+  /* in-game HUD (DOM — the canvas is WebGL now) */
+  #hud {
+    position: fixed; top: max(8px, env(safe-area-inset-top)); left: 0; right: 0;
+    text-align: center;
+    color: #fff;
+    z-index: 4;
+    pointer-events: none;
+    text-shadow: 0 1px 6px rgba(0,0,0,0.55);
+  }
+  #hud-score { font-size: 22px; font-weight: 800; }
+  #hud .sub { font-size: 12px; color: rgba(255,255,255,0.75); }
+
+  /* virtual joystick (DOM overlay) */
+  #joy-base, #joy-knob {
+    position: fixed; top: 0; left: 0;
+    border-radius: 50%;
+    pointer-events: none;
+    z-index: 5;
+  }
+  #joy-base { width: 104px; height: 104px; border: 2px solid rgba(255,255,255,0.45); }
+  #joy-knob { width: 44px; height: 44px; background: rgba(255,255,255,0.4); }
+
   /* touch controls (shown only on touch devices, in-game) */
   #kick {
     position: fixed;
@@ -234,6 +256,13 @@
 <div id="banner"></div>
 <div id="hint"></div>
 <div id="kick" class="hidden">KICK</div>
+
+<div id="hud" class="hidden">
+  <div id="hud-score"></div>
+  <div class="sub"><span id="hud-room"></span> · <span id="hud-ping"></span></div>
+</div>
+<div id="joy-base" style="display:none"></div>
+<div id="joy-knob" style="display:none"></div>
 
 <script src="main.js"></script>
 </body>

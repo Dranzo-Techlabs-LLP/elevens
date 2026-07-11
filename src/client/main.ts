@@ -1,14 +1,15 @@
 import { CONFIG as C } from '../shared/config';
-import type { PlayerSnap, Phase, Team } from '../shared/protocol';
+import type { Phase, PlayerSnap, Team } from '../shared/protocol';
 import { Net, type StateMsg } from './net';
 import { Input } from './input';
+import { Renderer3D, type View } from './render3d';
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
 const canvas = document.getElementById('game') as HTMLCanvasElement;
-const g = canvas.getContext('2d')!;
 
 const net = new Net();
 const input = new Input($('kick'));
+const renderer = new Renderer3D(canvas);
 const isTouch = 'ontouchstart' in window;
 
 // ---------- session state ----------
@@ -138,9 +139,9 @@ avatarFile.onchange = async () => {
   updateAvatarPreview();
 };
 
-// other players' photos: raw data URLs (for lobby <img>) + decoded Images (for canvas)
+// other players' photos: raw data URLs for lobby <img>; the 3D renderer turns
+// them into face textures on the player models
 const avatarUrls: Record<string, string> = {};
-const avatarImgs = new Map<string, HTMLImageElement>();
 
 async function join(room: string | null) {
   $('menu-err').textContent = '';
@@ -177,6 +178,7 @@ function showScreen(which: 'menu' | 'lobby' | 'end' | null) {
   const playing = which === null;
   input.enabled = playing;
   $('kick').classList.toggle('hidden', !(playing && isTouch));
+  $('hud').classList.toggle('hidden', !playing);
 }
 
 // ---------- server messages ----------
@@ -248,6 +250,7 @@ net.onMsg = (m) => {
       myTeam = m.team;
       roomCode = m.room;
       $('room-code').textContent = roomCode;
+      $('hud-room').textContent = `room ${roomCode}`;
       break;
     case 'lobby':
       lastLobby = m;
@@ -258,14 +261,12 @@ net.onMsg = (m) => {
       for (const [id, url] of Object.entries(m.avatars)) {
         if (avatarUrls[id] === url) continue;
         avatarUrls[id] = url;
-        const img = new Image();
-        img.src = url;
-        avatarImgs.set(id, img);
+        renderer.setAvatar(id, url);
       }
-      for (const id of [...avatarImgs.keys()]) {
+      for (const id of Object.keys(avatarUrls)) {
         if (!m.avatars[id]) {
-          avatarImgs.delete(id);
           delete avatarUrls[id];
+          renderer.setAvatar(id, null);
         }
       }
       if (lastLobby && inLobbyUi) renderLobby(lastLobby); // add minis that arrived late
@@ -315,11 +316,6 @@ net.onMsg = (m) => {
 // with network jitter, but because we look slightly into the past there are
 // (almost) always two of them to blend between — motion stays butter-smooth
 // without any prediction.
-interface View {
-  players: PlayerSnap[];
-  ball: { x: number; y: number };
-}
-
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 function lerpAngle(a: number, b: number, t: number) {
   let d = b - a;
@@ -345,7 +341,7 @@ function sampleView(now: number): { view: View; latest: StateMsg } | null {
   const span = newer.at - older.at;
   const t = span > 0 ? Math.min(1, Math.max(0, (target - older.at) / span)) : 1;
 
-  const players = newer.s.players.map((np) => {
+  const players: PlayerSnap[] = newer.s.players.map((np) => {
     const op = older.s.players.find((p) => p.id === np.id) ?? np;
     return {
       ...np,
@@ -357,178 +353,48 @@ function sampleView(now: number): { view: View; latest: StateMsg } | null {
   const ball = {
     x: lerp(older.s.ball.x, newer.s.ball.x, t),
     y: lerp(older.s.ball.y, newer.s.ball.y, t),
+    z: lerp(older.s.ball.z, newer.s.ball.z, t),
   };
   return { view: { players, ball }, latest: buf[buf.length - 1].s };
 }
 
-// ---------- rendering ----------
-let dpr = 1;
-function resize() {
-  dpr = Math.min(devicePixelRatio || 1, 2);
-  canvas.width = innerWidth * dpr;
-  canvas.height = innerHeight * dpr;
-  canvas.style.width = innerWidth + 'px';
-  canvas.style.height = innerHeight + 'px';
-}
-addEventListener('resize', resize);
-resize();
+// ---------- HUD + joystick DOM overlays ----------
+const hudScore = $('hud-score');
+const hudPing = $('hud-ping');
+const joyBase = $('joy-base');
+const joyKnob = $('joy-knob');
+let hudText = '';
 
-const TEAM_COLOR: Record<Team, string> = { A: '#3b82f6', B: '#ef4444' };
-
-function drawPitch() {
-  g.fillStyle = '#2f9e44';
-  g.fillRect(0, 0, C.PITCH_W, C.PITCH_H);
-  g.fillStyle = 'rgba(255,255,255,0.05)';
-  for (let i = 0; i < 8; i += 2) g.fillRect((i * C.PITCH_W) / 8, 0, C.PITCH_W / 8, C.PITCH_H);
-
-  g.strokeStyle = 'rgba(255,255,255,0.85)';
-  g.lineWidth = 3;
-  g.strokeRect(1.5, 1.5, C.PITCH_W - 3, C.PITCH_H - 3);
-  g.beginPath();
-  g.moveTo(C.PITCH_W / 2, 0);
-  g.lineTo(C.PITCH_W / 2, C.PITCH_H);
-  g.stroke();
-  g.beginPath();
-  g.arc(C.PITCH_W / 2, C.PITCH_H / 2, 70, 0, Math.PI * 2);
-  g.stroke();
-
-  // goal mouths
-  const gy = C.PITCH_H / 2 - C.GOAL_WIDTH / 2;
-  g.fillStyle = 'rgba(255,255,255,0.3)';
-  g.fillRect(-12, gy, 12, C.GOAL_WIDTH);
-  g.fillRect(C.PITCH_W, gy, 12, C.GOAL_WIDTH);
+function updateHud(latest: StateMsg | null) {
+  if (!latest || latest.phase === 'lobby') return;
+  const t = Math.max(0, latest.timeLeft);
+  const mm = Math.floor(t / 60);
+  const ss = String(Math.floor(t % 60)).padStart(2, '0');
+  const text = `${latest.score[0]}  —  ${latest.score[1]}    ${mm}:${ss}`;
+  if (text !== hudText) {
+    hudText = text;
+    hudScore.textContent = text;
+  }
+  if (net.rtt > 0) {
+    hudPing.textContent = `${net.rtt} ms`;
+    hudPing.style.color = net.rtt < 80 ? '#4ade80' : net.rtt < 150 ? '#facc15' : '#f87171';
+  }
 }
 
-function drawFrame() {
-  const now = performance.now();
-  g.setTransform(1, 0, 0, 1, 0, 0);
-  g.fillStyle = '#14532d';
-  g.fillRect(0, 0, canvas.width, canvas.height);
-
-  // fit pitch to screen, centered (16px margin for the HUD)
-  const scale = Math.min((innerWidth - 16) / C.PITCH_W, (innerHeight - 56) / C.PITCH_H);
-  const offX = (innerWidth - C.PITCH_W * scale) / 2;
-  const offY = (innerHeight - C.PITCH_H * scale) / 2 + 14;
-  g.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * offX, dpr * offY);
-
-  drawPitch();
-
-  const sampled = sampleView(now);
-  if (sampled) {
-    const { view, latest } = sampled;
-
-    // ball shadow + ball
-    g.beginPath();
-    g.arc(view.ball.x + 2, view.ball.y + 3, C.BALL_RADIUS, 0, Math.PI * 2);
-    g.fillStyle = 'rgba(0,0,0,0.25)';
-    g.fill();
-    g.beginPath();
-    g.arc(view.ball.x, view.ball.y, C.BALL_RADIUS, 0, Math.PI * 2);
-    g.fillStyle = '#fff';
-    g.fill();
-    g.strokeStyle = '#333';
-    g.lineWidth = 1.5;
-    g.stroke();
-
-    for (const p of view.players) {
-      const me = p.id === playerId;
-      const img = avatarImgs.get(p.id);
-      const hasPic = !!img && img.complete && img.naturalWidth > 0;
-      if (hasPic) {
-        // selfie clipped into the player circle, team color as the ring
-        g.save();
-        g.beginPath();
-        g.arc(p.x, p.y, C.PLAYER_RADIUS, 0, Math.PI * 2);
-        g.clip();
-        g.drawImage(img!, p.x - C.PLAYER_RADIUS, p.y - C.PLAYER_RADIUS, C.PLAYER_RADIUS * 2, C.PLAYER_RADIUS * 2);
-        g.restore();
-        g.beginPath();
-        g.arc(p.x, p.y, C.PLAYER_RADIUS, 0, Math.PI * 2);
-        g.strokeStyle = TEAM_COLOR[p.team];
-        g.lineWidth = 3;
-        g.stroke();
-        if (me) {
-          g.beginPath();
-          g.arc(p.x, p.y, C.PLAYER_RADIUS + 3, 0, Math.PI * 2);
-          g.strokeStyle = '#fff';
-          g.lineWidth = 2;
-          g.stroke();
-        }
-      } else {
-        // no photo: flat team-colored disc
-        g.beginPath();
-        g.arc(p.x, p.y, C.PLAYER_RADIUS, 0, Math.PI * 2);
-        g.fillStyle = TEAM_COLOR[p.team];
-        g.fill();
-        g.lineWidth = me ? 3.5 : 1.5;
-        g.strokeStyle = me ? '#fff' : 'rgba(0,0,0,0.35)';
-        g.stroke();
-      }
-      // facing dot
-      g.beginPath();
-      g.arc(p.x + Math.cos(p.dir) * (C.PLAYER_RADIUS - 4), p.y + Math.sin(p.dir) * (C.PLAYER_RADIUS - 4), 3, 0, Math.PI * 2);
-      g.fillStyle = 'rgba(255,255,255,0.9)';
-      g.fill();
-      // charge ring — for MY player use local hold time (zero-latency feel);
-      // everyone else renders the (slightly delayed) server charge value
-      const charge = me && input.kick
-        ? Math.min(1, (now - input.kickHeldSince) / C.KICK_CHARGE_MS)
-        : p.charge;
-      if (charge > 0.02) {
-        g.beginPath();
-        g.arc(p.x, p.y, C.PLAYER_RADIUS + 5, -Math.PI / 2, -Math.PI / 2 + charge * Math.PI * 2);
-        g.strokeStyle = '#facc15';
-        g.lineWidth = 3;
-        g.stroke();
-      }
-      // name
-      g.font = '11px system-ui';
-      g.textAlign = 'center';
-      g.fillStyle = 'rgba(255,255,255,0.85)';
-      g.fillText(p.name, p.x, p.y - C.PLAYER_RADIUS - 7);
-    }
-
-    // HUD (screen space)
-    g.setTransform(dpr, 0, 0, dpr, 0, 0);
-    if (latest.phase !== 'lobby') {
-      const t = Math.max(0, latest.timeLeft);
-      const mm = Math.floor(t / 60);
-      const ss = String(Math.floor(t % 60)).padStart(2, '0');
-      g.font = '700 22px system-ui';
-      g.textAlign = 'center';
-      g.fillStyle = '#fff';
-      g.fillText(`${latest.score[0]}  —  ${latest.score[1]}     ${mm}:${ss}`, innerWidth / 2, 30);
-      g.font = '12px system-ui';
-      g.fillStyle = 'rgba(255,255,255,0.6)';
-      g.fillText(`room ${roomCode}`, innerWidth / 2, 48);
-
-      // ping readout — green under 80ms, yellow under 150ms, red above
-      if (net.rtt > 0) {
-        g.textAlign = 'left';
-        g.font = '11px system-ui';
-        g.fillStyle = net.rtt < 80 ? '#4ade80' : net.rtt < 150 ? '#facc15' : '#f87171';
-        g.fillText(`${net.rtt} ms`, 10, innerHeight - 10);
-      }
-    }
+function updateJoystickOverlay() {
+  if (!input.joyActive) {
+    joyBase.style.display = 'none';
+    joyKnob.style.display = 'none';
+    return;
   }
-
-  // virtual joystick overlay (screen space)
-  if (input.joyActive) {
-    g.setTransform(dpr, 0, 0, dpr, 0, 0);
-    g.beginPath();
-    g.arc(input.joyBase.x, input.joyBase.y, 52, 0, Math.PI * 2);
-    g.strokeStyle = 'rgba(255,255,255,0.4)';
-    g.lineWidth = 2;
-    g.stroke();
-    const dx = input.joyKnob.x - input.joyBase.x;
-    const dy = input.joyKnob.y - input.joyBase.y;
-    const d = Math.hypot(dx, dy);
-    const k = d > 52 ? 52 / d : 1;
-    g.beginPath();
-    g.arc(input.joyBase.x + dx * k, input.joyBase.y + dy * k, 22, 0, Math.PI * 2);
-    g.fillStyle = 'rgba(255,255,255,0.35)';
-    g.fill();
-  }
+  const dx = input.joyKnob.x - input.joyBase.x;
+  const dy = input.joyKnob.y - input.joyBase.y;
+  const d = Math.hypot(dx, dy);
+  const k = d > 52 ? 52 / d : 1;
+  joyBase.style.display = 'block';
+  joyKnob.style.display = 'block';
+  joyBase.style.transform = `translate(${input.joyBase.x - 52}px, ${input.joyBase.y - 52}px)`;
+  joyKnob.style.transform = `translate(${input.joyBase.x + dx * k - 22}px, ${input.joyBase.y + dy * k - 22}px)`;
 }
 
 // ---------- main loop ----------
@@ -537,8 +403,8 @@ function tickFrame() {
 
   // send held input on any change, plus a 100ms heartbeat so the server
   // state can never go stale if a packet is dropped
+  const now = performance.now();
   if (playerId && net.connected) {
-    const now = performance.now();
     const changed =
       input.mx !== lastSent.mx || input.my !== lastSent.my || input.kick !== lastSent.kick;
     if (changed || now - lastSent.at > 100) {
@@ -547,7 +413,14 @@ function tickFrame() {
     }
   }
 
-  drawFrame();
+  const sampled = sampleView(now);
+  // my charge ring uses the LOCAL hold time (zero-latency feel); everyone
+  // else's comes from the server snapshot
+  const myCharge = input.kick ? Math.min(1, (now - input.kickHeldSince) / C.KICK_CHARGE_MS) : 0;
+  renderer.update(sampled?.view ?? null, playerId, myCharge);
+  updateHud(sampled?.latest ?? null);
+  updateJoystickOverlay();
+
   requestAnimationFrame(tickFrame);
 }
 

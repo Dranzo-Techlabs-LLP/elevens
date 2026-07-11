@@ -45,7 +45,7 @@ export class Room {
   phase: Phase = 'lobby';
   score: [number, number] = [0, 0];
   timeLeft = C.MATCH_SECONDS;
-  ball = { x: C.PITCH_W / 2, y: C.PITCH_H / 2, vx: 0, vy: 0 };
+  ball = { x: C.PITCH_W / 2, y: C.PITCH_H / 2, z: 0, vx: 0, vy: 0, vz: 0 };
   tick = 0;
   rematchVotes = new Set<string>();
   private pauseUntilTick = 0;
@@ -215,7 +215,7 @@ export class Room {
 
   /** Everyone back to formation spots, ball to center, all motion zeroed. */
   private kickoffReset() {
-    this.ball = { x: C.PITCH_W / 2, y: C.PITCH_H / 2, vx: 0, vy: 0 };
+    this.ball = { x: C.PITCH_W / 2, y: C.PITCH_H / 2, z: 0, vx: 0, vy: 0, vz: 0 };
     for (const e of this.entities.values()) {
       this.placeAtFormation(e);
       e.vx = 0;
@@ -311,11 +311,21 @@ export class Room {
       }
     }
 
-    // ball: roll + friction
+    // ball: 2D roll + vertical flight (z up, simple projectile + bounce)
     const ball = this.ball;
     ball.x += ball.vx * DT;
     ball.y += ball.vy * DT;
-    const f = Math.exp(-C.BALL_FRICTION * DT);
+    ball.z += ball.vz * DT;
+    ball.vz -= C.BALL_GRAVITY * DT;
+    if (ball.z <= 0) {
+      ball.z = 0;
+      if (ball.vz < 0) {
+        ball.vz = -ball.vz * C.BALL_BOUNCE;
+        if (ball.vz < 60) ball.vz = 0; // stop micro-bouncing
+      }
+    }
+    // grass friction only while rolling; light air drag while flying
+    const f = Math.exp(-(ball.z > 1 ? C.BALL_AIR_DRAG : C.BALL_FRICTION) * DT);
     ball.vx *= f;
     ball.vy *= f;
 
@@ -328,7 +338,10 @@ export class Room {
       ball.y = C.PITCH_H - C.BALL_RADIUS;
       ball.vy = -Math.abs(ball.vy) * C.WALL_BOUNCE;
     }
-    const inMouth = Math.abs(ball.y - C.PITCH_H / 2) < C.GOAL_WIDTH / 2;
+    // goal line: only counts under the crossbar; above it the ball bounces
+    // back off the (invisible) frame like a wall
+    const inMouth =
+      Math.abs(ball.y - C.PITCH_H / 2) < C.GOAL_WIDTH / 2 && ball.z < C.GOAL_HEIGHT;
     if (!inMouth) {
       if (ball.x < C.BALL_RADIUS) {
         ball.x = C.BALL_RADIUS;
@@ -345,22 +358,43 @@ export class Room {
       if (ball.x > C.PITCH_W + C.BALL_RADIUS) return this.goal('A');
     }
 
-    // player-ball contact: push the ball out and give it the player's motion
-    // plus a small nudge — dribbling emerges from this, no possession system
-    for (const e of list) {
-      const dx = ball.x - e.x, dy = ball.y - e.y;
-      const d = Math.hypot(dx, dy);
-      const min = C.PLAYER_RADIUS + C.BALL_RADIUS;
-      if (d > 0.0001 && d < min) {
-        const nx = dx / d, ny = dy / d;
-        ball.x = e.x + nx * min;
-        ball.y = e.y + ny * min;
-        ball.vx = e.vx + nx * C.DRIBBLE_PUSH;
-        ball.vy = e.vy + ny * C.DRIBBLE_PUSH;
+    // player-ball interaction only while the ball is reachable (low enough)
+    if (ball.z < C.KICKABLE_HEIGHT) {
+      for (const e of list) {
+        const dx = ball.x - e.x, dy = ball.y - e.y;
+        const d = Math.hypot(dx, dy);
+        const min = C.PLAYER_RADIUS + C.BALL_RADIUS;
+
+        // hard contact: push the ball out and give it the player's motion
+        if (d > 0.0001 && d < min) {
+          const nx = dx / d, ny = dy / d;
+          ball.x = e.x + nx * min;
+          ball.y = e.y + ny * min;
+          ball.vx = e.vx + nx * C.DRIBBLE_PUSH;
+          ball.vy = e.vy + ny * C.DRIBBLE_PUSH;
+        }
+
+        // soft ball control: while running near a slow-moving ball, a gentle
+        // magnet steers it toward a spot just in front of the feet, and the
+        // ball's velocity eases toward the player's. This is what makes
+        // dribbling feel deliberate instead of pinball.
+        const running = Math.hypot(e.vx, e.vy) > 40;
+        const relSpeed = Math.hypot(ball.vx - e.vx, ball.vy - e.vy);
+        if (running && d < C.CONTROL_RADIUS && relSpeed < C.CONTROL_MAX_REL_SPEED) {
+          const reach = C.PLAYER_RADIUS + C.BALL_RADIUS + 3;
+          const tx = e.x + Math.cos(e.dir) * reach;
+          const ty = e.y + Math.sin(e.dir) * reach;
+          ball.vx += (tx - ball.x) * C.DRIBBLE_PULL * DT;
+          ball.vy += (ty - ball.y) * C.DRIBBLE_PULL * DT;
+          const ease = 1 - Math.exp(-3 * DT);
+          ball.vx += (e.vx - ball.vx) * ease;
+          ball.vy += (e.vy - ball.vy) * ease;
+        }
       }
     }
 
-    // kicks: charge while the button is held, fire on release
+    // kicks: charge while the button is held, fire on release.
+    // Charge sets power AND loft — taps stay on the deck, full charge lofts.
     for (const e of list) {
       if (e.input.kick) {
         e.kickHeldMs += DT * 1000;
@@ -370,10 +404,11 @@ export class Room {
         const t = Math.min(1, e.kickHeldMs / C.KICK_CHARGE_MS);
         e.kickHeldMs = 0;
         const d = Math.hypot(ball.x - e.x, ball.y - e.y);
-        if (d <= C.KICK_RADIUS) {
+        if (d <= C.KICK_RADIUS && ball.z < C.KICKABLE_HEIGHT) {
           const power = C.KICK_MIN + (C.KICK_MAX - C.KICK_MIN) * t;
           ball.vx = Math.cos(e.dir) * power;
           ball.vy = Math.sin(e.dir) * power;
+          ball.vz = power * (C.KICK_LIFT_MIN + (C.KICK_LIFT_MAX - C.KICK_LIFT_MIN) * t);
         }
       }
     }
@@ -401,8 +436,10 @@ export class Room {
       ball: {
         x: round1(this.ball.x),
         y: round1(this.ball.y),
+        z: round1(this.ball.z),
         vx: round1(this.ball.vx),
         vy: round1(this.ball.vy),
+        vz: round1(this.ball.vz),
       },
       score: [this.score[0], this.score[1]],
       timeLeft: Math.max(0, Math.ceil(this.timeLeft)),

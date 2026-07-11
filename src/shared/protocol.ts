@@ -18,8 +18,10 @@ export interface PlayerSnap {
 export interface BallSnap {
   x: number;
   y: number;
+  z: number;  // height above the grass
   vx: number;
   vy: number;
+  vz: number;
 }
 
 export type ClientMsg =
