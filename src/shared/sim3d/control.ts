@@ -73,6 +73,7 @@ export function stepBallControl(
     const relX = bv.x - pl.velX;
     const relZ = bv.z - pl.velZ;
     const relSpeed = Math.hypot(relX, relZ);
+    const ballSpeed = Math.hypot(bv.x, bv.z);
     const plSpeed = pl.speed;
     const sprinting = plSpeed > 6.5;
     // closing speed: positive = the ball is coming AT me. A ball rolling
@@ -80,7 +81,10 @@ export function stepBallControl(
     // that's a dribble, not a trap.
     const closing = dist > 1e-4 ? (relX * -dx + relZ * -dz) / dist : 0;
 
-    if (relSpeed > tune.gripSpeed && closing > 2) {
+    // TRAP is for genuinely INCOMING balls (a pass/shot flying at you).
+    // Running onto a slow/still ball must NOT trap-tap it away — that goes
+    // to the touch/collect branches, which is what "holding the ball" is.
+    if (ballSpeed > tune.gripSpeed && relSpeed > tune.gripSpeed && closing > 2) {
       // ---- FIRST TOUCH / TRAP ----
       // kill a fraction of the RELATIVE velocity; what survives is the
       // "heaviness" of the touch and runs on physically
@@ -118,14 +122,16 @@ export function stepBallControl(
       events.push({ type: 'touch', playerIndex: i, intensity: plSpeed });
     }
     // ---- SOFT COLLECT (no cooldown, no glue) ----
-    // a close, slow ball is EASED toward a spot ahead of the feet with a
-    // capped acceleration. This is the PES-smooth carry between touches:
-    // the ball still obeys physics (an opponent's poke still wins it), it
-    // just stops ping-ponging off your shins.
-    if (dist <= tune.collectRadius && relSpeed < tune.gripSpeed && plSpeed > 0.3) {
-      const dirYaw = Math.atan2(pl.velZ, pl.velX);
-      const tx = pl.pos.x + Math.cos(dirYaw) * tune.collectLead;
-      const tz = pl.pos.z + Math.sin(dirYaw) * tune.collectLead;
+    // a close, slow-relative ball is EASED toward a spot ahead of the feet
+    // with a capped acceleration. Works STANDING too — receiving a pass
+    // means the ball settles AT your feet, not two meters past them. The
+    // ball still obeys physics: an opponent's poke still wins it.
+    if (dist <= tune.collectRadius && relSpeed < 7) {
+      const moving = plSpeed > 0.3;
+      const dirYaw = moving ? Math.atan2(pl.velZ, pl.velX) : pl.yaw;
+      const lead = moving ? tune.collectLead : tune.collectLead * 0.55;
+      const tx = pl.pos.x + Math.cos(dirYaw) * lead;
+      const tz = pl.pos.z + Math.sin(dirYaw) * lead;
       const wantVX = pl.velX + (tx - bp.x) * 6;
       const wantVZ = pl.velZ + (tz - bp.z) * 6;
       const dvx = wantVX - bv.x;

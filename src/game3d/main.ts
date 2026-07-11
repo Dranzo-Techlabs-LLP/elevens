@@ -392,6 +392,7 @@ const ballShadow = (() => {
 // fallback otherwise. Both expose the same update/trigger surface.
 interface Model { rig: HumanRig | CharModel; label: THREE.Sprite; ring: THREE.Mesh; ringMat: THREE.MeshBasicMaterial; }
 const models = new Map<string, Model>();
+(window as any).__models = models; // debug/verification hook
 function label(text: string) {
   const c = document.createElement('canvas');
   c.width = 256; c.height = 56;

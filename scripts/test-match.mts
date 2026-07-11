@@ -87,5 +87,73 @@ const out: Record<string, unknown> = {};
   out.passVerb = { speed: +Math.hypot(bv.x, bv.z).toFixed(1), angleDeg: +ang.toFixed(0) };
 }
 
+// 6. CLASH: two players sprint head-on — must NOT deadlock in place
+{
+  const m = new Match(RAPIER, 30);
+  m.addPlayer('a', 'A', 0, false);
+  m.addPlayer('b', 'B', 1, false);
+  m.restart(180);
+  m.players[0].body.setTranslation({ x: -3, y: 0.91, z: 5 }, true);
+  m.players[1].body.setTranslation({ x: 3, y: 0.91, z: 5 }, true);
+  m.ball.setTranslation({ x: 0, y: 0.11, z: -8 }, true); // ball far away
+  for (let t = 0; t < 90; t++) {
+    const ia = idleFullInput(); ia.mx = 1;  // A runs +x
+    const ib = idleFullInput(); ib.mx = -1; // B runs -x
+    m.setInput(0, ia);
+    m.setInput(1, ib);
+    m.step();
+  }
+  const ax = m.players[0].pos.x;
+  const bx = m.players[1].pos.x;
+  out.clash = { aX: +ax.toFixed(2), bX: +bx.toFixed(2), passedThrough: ax > 1.5 && bx < -1.5 };
+}
+
+// 7. STANDING RECEIVE: 10 m/s pass arrives — ball must settle AT the feet
+{
+  const m = new Match(RAPIER, 30);
+  m.addPlayer('h1', 'Rec', 0, false);
+  m.restart(180);
+  const p = m.players[0];
+  p.body.setTranslation({ x: 5, y: 0.91, z: 5 }, true);
+  p.yaw = Math.PI; // facing the incoming ball
+  m.ball.setTranslation({ x: 12, y: 0.11, z: 5 }, true);
+  m.ball.setLinvel({ x: -10, y: 0, z: 0 }, true);
+  for (let t = 0; t < 75; t++) { m.setInput(0, idleFullInput()); m.step(); }
+  const bp = m.ball.translation();
+  const bv = m.ball.linvel();
+  const rest = Math.hypot(bp.x - p.pos.x, bp.z - p.pos.z);
+  out.standingReceive = {
+    restDist: +rest.toFixed(2),
+    ballSpeed: +Math.hypot(bv.x, bv.z).toFixed(2),
+    held: rest < 0.8 && Math.hypot(bv.x, bv.z) < 1,
+  };
+}
+
+// 8. RUN ONTO BALL: sprint at a still ball — must carry it, not squirt it
+{
+  const m = new Match(RAPIER, 30);
+  m.addPlayer('h1', 'Run', 0, false);
+  m.restart(180);
+  const p = m.players[0];
+  p.body.setTranslation({ x: -6, y: 0.91, z: 5 }, true);
+  m.ball.setTranslation({ x: -2, y: 0.11, z: 5 }, true);
+  m.ball.setLinvel({ x: 0, y: 0, z: 0 }, true);
+  const seps: number[] = [];
+  for (let t = 0; t < 120; t++) {
+    const inp = idleFullInput();
+    inp.mx = 1;
+    inp.sprint = true;
+    m.setInput(0, inp);
+    m.step();
+    if (t > 30) {
+      const bp2 = m.ball.translation();
+      seps.push(Math.hypot(bp2.x - p.pos.x, bp2.z - p.pos.z));
+    }
+  }
+  const maxSep = Math.max(...seps);
+  const inControl = seps.filter((s) => s < 1.6).length / seps.length;
+  out.runOnto = { maxSep: +maxSep.toFixed(2), inControlPct: Math.round(inControl * 100), held: inControl > 0.85 };
+}
+
 console.log(JSON.stringify(out, null, 1));
 process.exit(0);

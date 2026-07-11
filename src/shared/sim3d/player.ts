@@ -80,8 +80,13 @@ export class SimPlayer {
       R.RigidBodyDesc.kinematicPositionBased().setTranslation(x, centerY, z),
     );
     const halfCyl = (PLAYER.height - 2 * PLAYER.capsuleRadius) / 2;
+    // collision groups: WALLS=1, PLAYERS=2, BALL=4. The capsule is a member
+    // of PLAYERS and interacts with everything (so the dynamic ball still
+    // bounces off bodies)…
     this.collider = world.createCollider(
-      R.ColliderDesc.capsule(halfCyl, PLAYER.capsuleRadius).setFriction(0.4),
+      R.ColliderDesc.capsule(halfCyl, PLAYER.capsuleRadius)
+        .setFriction(0.4)
+        .setCollisionGroups((0x0002 << 16) | 0x0007),
       this.body,
     );
     // small skin gap; lets us slide around posts/players instead of sticking
@@ -171,12 +176,17 @@ export class SimPlayer {
       this.speed > 0.5 ? Math.atan2(this.velZ, this.velX) : mag > 0.01 ? Math.atan2(dz, dx) : this.yaw;
     this.yaw += wrapAngle(faceTarget - this.yaw) * (1 - Math.exp(-10 * dt));
 
-    // --- move through Rapier's character controller (slides on contacts) ---
-    this.controller.computeColliderMovement(this.collider, {
-      x: this.velX * dt,
-      y: 0,
-      z: this.velZ * dt,
-    });
+    // --- move through Rapier's character controller ---
+    // …but the CONTROLLER only treats WALLS as obstacles (filter group 1).
+    // Other players and the ball must never hard-block movement — head-on
+    // players used to deadlock running in place. Player-player overlap is
+    // resolved by the match's soft separation pass instead.
+    this.controller.computeColliderMovement(
+      this.collider,
+      { x: this.velX * dt, y: 0, z: this.velZ * dt },
+      undefined,
+      (0x0002 << 16) | 0x0001,
+    );
     const m = this.controller.computedMovement();
     const p = this.body.translation();
     this.body.setNextKinematicTranslation({

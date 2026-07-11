@@ -94,9 +94,9 @@ export const TOUCH = {
   // dribble touches: ball velocity set to player direction * player speed *
   // touchSpeed. >1 means the ball runs ahead and you chase onto it.
   dribbleTouchSpeed: 1.10,
-  sprintTouchSpeed: 1.26, // sprinting: bigger knock-ons (but playable)
+  sprintTouchSpeed: 1.18, // sprinting: bigger knock-ons (but playable)
   touchCooldown: 0.22,    // s between contacts at jog
-  sprintTouchCooldown: 0.30,
+  sprintTouchCooldown: 0.26,
   // soft collect: between touches, a nearby slow ball is eased toward a spot
   // just ahead of the feet with a CAPPED acceleration — kills the shin-pong
   // jitter without ever gluing the ball

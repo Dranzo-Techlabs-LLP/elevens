@@ -15,7 +15,6 @@ const CLIP_NAMES = {
   walk: 'Walk_Loop',
   jog: 'Jog_Fwd_Loop',
   sprint: 'Sprint_Loop',
-  slide: 'Roll',
   stun: 'Hit_Chest',
 } as const;
 
@@ -126,9 +125,13 @@ export class CharModel {
   private mixer: THREE.AnimationMixer;
   private actions: Record<string, THREE.AnimationAction> = {};
   private cur = 'idle';
+  private pose = new THREE.Group(); // slide/stun body posing wrapper
   private thighR: THREE.Object3D | null = null;
   private calfR: THREE.Object3D | null = null;
+  private thighL: THREE.Object3D | null = null;
+  private calfL: THREE.Object3D | null = null;
   private kickT = 0;
+  private slideBlend = 0; // 0..1 smoothed slide pose weight
   private speedF = 0; // filtered speed for stable state picks
 
   constructor(team: 'A' | 'B', seed = 0) {
@@ -148,8 +151,11 @@ export class CharModel {
       }
       if (o.name === 'thigh_r') this.thighR = o;
       if (o.name === 'calf_r') this.calfR = o;
+      if (o.name === 'thigh_l') this.thighL = o;
+      if (o.name === 'calf_l') this.calfL = o;
     });
-    this.group.add(model);
+    this.pose.add(model);
+    this.group.add(this.pose);
 
     this.mixer = new THREE.AnimationMixer(model);
     for (const [key, name] of Object.entries(CLIP_NAMES)) {
@@ -168,7 +174,7 @@ export class CharModel {
     const sp = this.speedF;
 
     let want: string;
-    if (s.sliding && this.actions.slide) want = 'slide';
+    if (s.sliding) want = this.cur; // slide is a POSE overlay, not a clip
     else if (s.stunned && this.actions.stun) want = 'stun';
     else if (sp < 0.35) want = 'idle';
     else if (sp < 2.4) want = 'walk';
@@ -179,7 +185,7 @@ export class CharModel {
       const prev = this.actions[this.cur];
       const next = this.actions[want];
       next.reset();
-      if (want === 'slide' || want === 'stun') {
+      if (want === 'stun') {
         next.setLoop(THREE.LoopOnce, 1);
         next.clampWhenFinished = true;
       } else {
@@ -202,6 +208,24 @@ export class CharModel {
       // UE-style skeleton: swing the thigh forward, extend the calf
       this.thighR?.rotateZ(-1.15 * k);
       this.calfR?.rotateZ(0.35 * k);
+    }
+
+    // SLIDE TACKLE pose (overlay, smoothed): body low and leaned back,
+    // leading leg extended along the slide, trailing leg tucked — a proper
+    // ground slide, not a somersault
+    const target = s.sliding ? 1 : 0;
+    this.slideBlend += (target - this.slideBlend) * (1 - Math.exp(-14 * dt));
+    if (this.slideBlend > 0.01) {
+      const b = this.slideBlend;
+      this.pose.rotation.z = 0.95 * b;    // lean back (forward = +X local)
+      this.pose.position.y = -0.62 * b;   // hips to the grass
+      this.thighR?.rotateZ(-1.35 * b);    // leading leg out front
+      this.calfR?.rotateZ(0.15 * b);
+      this.thighL?.rotateZ(0.55 * b);     // trailing leg tucked
+      this.calfL?.rotateZ(-1.0 * b);
+    } else {
+      this.pose.rotation.z = 0;
+      this.pose.position.y = 0;
     }
   }
 }

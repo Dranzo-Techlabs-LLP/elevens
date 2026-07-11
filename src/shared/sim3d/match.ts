@@ -222,6 +222,39 @@ export class Match {
         );
       }
 
+      // soft player-player separation: overlapping capsules shove apart at a
+      // capped rate (replaces hard controller blocking, which deadlocked
+      // head-on runners in place)
+      const MIN_D = PLAYER.capsuleRadius * 2 - 0.04;
+      for (let i = 0; i < this.players.length; i++) {
+        for (let j = i + 1; j < this.players.length; j++) {
+          const a = this.players[i].body.translation();
+          const b = this.players[j].body.translation();
+          const dx = b.x - a.x;
+          const dz = b.z - a.z;
+          const d = Math.hypot(dx, dz);
+          if (d > 1e-5 && d < MIN_D) {
+            const push = Math.min((MIN_D - d) / 2, 2.5 * dt); // capped shove
+            let nx = dx / d;
+            let nz = dz / d;
+            // shoulder-slip: dead head-on contact has no lateral component
+            // and grinds forever — bias the push sideways so bodies slide
+            // past each other like real shoulder charges
+            const pi_ = this.players[i], pj = this.players[j];
+            const vDot = pi_.velX * pj.velX + pi_.velZ * pj.velZ;
+            if (vDot < -1) {
+              const sx = -nz, sz = nx; // perpendicular
+              nx = (nx + sx * 0.85);
+              nz = (nz + sz * 0.85);
+              const nl = Math.hypot(nx, nz);
+              nx /= nl; nz /= nl;
+            }
+            this.players[i].body.setTranslation({ x: a.x - nx * push * 1.6, y: a.y, z: a.z - nz * push * 1.6 }, true);
+            this.players[j].body.setTranslation({ x: b.x + nx * push * 1.6, y: b.y, z: b.z + nz * push * 1.6 }, true);
+          }
+        }
+      }
+
       // ball control (traps + dribble touches) — skip for stunned/sliding
       const ctlEvents = stepBallControl(
         dt,
