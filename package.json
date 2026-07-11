@@ -5,6 +5,7 @@
   "main": "app.js",
   "scripts": {
     "dev": "concurrently -k -n client,server \"npm:dev:client\" \"npm:dev:server\"",
+    "lab": "vite",
     "dev:client": "esbuild src/client/main.ts --bundle --outfile=public/main.js --sourcemap --watch",
     "dev:server": "tsx watch src/server/index.ts",
     "build": "node build.mjs",
@@ -13,16 +14,22 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.19.3",
     "three": "^0.185.1",
+    "three-stdlib": "^2.36.1",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "@types/stats.js": "^0.17.4",
     "@types/three": "^0.185.1",
     "@types/ws": "^8.5.13",
     "concurrently": "^9.1.0",
-    "esbuild": "^0.24.0",
+    "esbuild": "^0.28.1",
+    "stats.js": "^0.17.0",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "tweakpane": "^4.0.5",
+    "typescript": "^5.7.2",
+    "vite": "^8.1.4"
   }
 }

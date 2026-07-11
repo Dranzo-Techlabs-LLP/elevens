@@ -5,3 +5,6 @@ app.js
 dist/
 .claude/
 .DS_Store
+assets/raw/
+public/assets/
+dist-web/
