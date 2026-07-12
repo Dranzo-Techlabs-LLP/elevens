@@ -300,30 +300,61 @@ scene.add(sun);
     tx.fillStyle = `rgba(0,55,0,${Math.random() * 0.10})`;
     tx.fillRect(Math.random() * 2048, Math.random() * 1024, 2.5, 2.5);
   }
-  tx.strokeStyle = 'rgba(255,255,255,0.95)'; tx.lineWidth = 4;
-  tx.fillStyle = 'rgba(255,255,255,0.95)';
-  tx.strokeRect(3, 3, 2042, 1018);
-  tx.beginPath(); tx.moveTo(1024, 3); tx.lineTo(1024, 1021); tx.stroke();
-  tx.beginPath(); tx.arc(1024, 512, 3 * PX, 0, Math.PI * 2); tx.stroke();
-  tx.beginPath(); tx.arc(1024, 512, 6, 0, Math.PI * 2); tx.fill();
-  const boxW = 6 * PX, boxH = 7 * PX * (1024 / 1024) * (L / (2 * W)); // keep meters square: py per meter = 1024/W
-  const PY = 1024 / W;
-  for (const s of [0, 1]) {
-    const bx = s ? 2045 - 6 * PX : 3;
-    tx.strokeRect(bx, 512 - (7 * PY) / 2, 6 * PX, 7 * PY);
-    // penalty spot + arc
-    const spotX = s ? 2045 - 4 * PX : 3 + 4 * PX;
-    tx.beginPath(); tx.arc(spotX, 512, 5, 0, Math.PI * 2); tx.fill();
+  // ---- REGULATION MARKINGS, scaled from a full-size pitch to 40x20 ----
+  // px per meter is uniform (2048/40 == 1024/20), so we draw in meter space.
+  const S = 2048 / L;
+  const mm = (m: number) => m * S;
+  const LINE = mm(0.12); // 12cm lines
+  tx.strokeStyle = 'rgba(255,255,255,0.96)';
+  tx.fillStyle = 'rgba(255,255,255,0.96)';
+  tx.lineWidth = LINE;
+  tx.lineCap = 'butt';
+
+  // proportions derived from a 105x68 pitch, scaled to our L x W:
+  const PEN_DEPTH = (16.5 / 105) * L;   // 6.29m
+  const PEN_WIDTH = (40.3 / 68) * W;    // 11.85m
+  const SIX_DEPTH = (5.5 / 105) * L;    // 2.10m
+  const SIX_WIDTH = (18.3 / 68) * W;    // 5.38m
+  const SPOT = (11 / 105) * L;          // 4.19m
+  const CIRC_R = (9.15 / 105) * L;      // 3.49m
+  const CORNER_R = 0.6;
+
+  const inset = LINE / 2 + 1;
+  // touchlines + goal lines
+  tx.strokeRect(inset, inset, 2048 - inset * 2, 1024 - inset * 2);
+  // halfway line + center circle + center spot
+  tx.beginPath(); tx.moveTo(1024, inset); tx.lineTo(1024, 1024 - inset); tx.stroke();
+  tx.beginPath(); tx.arc(1024, 512, mm(CIRC_R), 0, Math.PI * 2); tx.stroke();
+  tx.beginPath(); tx.arc(1024, 512, mm(0.12), 0, Math.PI * 2); tx.fill();
+
+  for (const side of [0, 1]) {
+    const dir = side === 0 ? 1 : -1;              // drawing direction from the goal line
+    const gl = side === 0 ? inset : 2048 - inset; // goal line x (px)
+    const boxX = side === 0 ? gl : gl - mm(PEN_DEPTH);
+    // penalty area
+    tx.strokeRect(boxX, 512 - mm(PEN_WIDTH) / 2, mm(PEN_DEPTH), mm(PEN_WIDTH));
+    // goal area (6-yard box)
+    const sixX = side === 0 ? gl : gl - mm(SIX_DEPTH);
+    tx.strokeRect(sixX, 512 - mm(SIX_WIDTH) / 2, mm(SIX_DEPTH), mm(SIX_WIDTH));
+    // penalty spot
+    const spotX = gl + dir * mm(SPOT);
+    tx.beginPath(); tx.arc(spotX, 512, mm(0.12), 0, Math.PI * 2); tx.fill();
+    // penalty arc ("the D"): the part of the circle around the spot that
+    // lies OUTSIDE the penalty area
+    const cosA = (PEN_DEPTH - SPOT) / CIRC_R;     // where the circle meets the box edge
+    const a = Math.acos(Math.min(1, Math.max(-1, cosA)));
     tx.beginPath();
-    tx.arc(spotX, 512, 2.5 * PX, s ? Math.PI * 0.6 : -Math.PI * 0.4, s ? Math.PI * 1.4 : Math.PI * 0.4);
+    if (side === 0) tx.arc(spotX, 512, mm(CIRC_R), -a, a);
+    else tx.arc(spotX, 512, mm(CIRC_R), Math.PI - a, Math.PI + a);
     tx.stroke();
   }
-  // corner arcs
-  for (const [cx3, cy3] of [[3, 3], [2045, 3], [3, 1021], [2045, 1021]]) {
-    tx.beginPath();
-    tx.arc(cx3, cy3, 0.75 * PX, 0, Math.PI * 2);
-    tx.stroke();
-  }
+
+  // corner quarter-arcs (proper quadrant per corner)
+  const cr = mm(CORNER_R);
+  tx.beginPath(); tx.arc(inset, inset, cr, 0, Math.PI / 2); tx.stroke();
+  tx.beginPath(); tx.arc(2048 - inset, inset, cr, Math.PI / 2, Math.PI); tx.stroke();
+  tx.beginPath(); tx.arc(2048 - inset, 1024 - inset, cr, Math.PI, Math.PI * 1.5); tx.stroke();
+  tx.beginPath(); tx.arc(inset, 1024 - inset, cr, Math.PI * 1.5, Math.PI * 2); tx.stroke();
   const ptex = new THREE.CanvasTexture(texC);
   ptex.colorSpace = THREE.SRGBColorSpace;
   ptex.anisotropy = 4;
@@ -369,6 +400,19 @@ function netGrid(w: number, h: number, step: number) {
     roof.rotation.set(-Math.PI / 2, 0, Math.PI / 2);
     roof.position.set(gx + sx * gd / 2, gh, 0);
     scene.add(roof);
+    // side nets + angled rear stanchions — the goal reads as a real box
+    for (const sz of [-1, 1]) {
+      const sideNet = netGrid(gd, gh, 0.3);
+      sideNet.position.set(gx + sx * gd / 2, gh / 2, sz * gw / 2);
+      scene.add(sideNet);
+      const stan = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.025, 0.025, Math.hypot(gd, gh), 8),
+        postMat,
+      );
+      stan.position.set(gx + sx * gd / 2, gh / 2, sz * gw / 2);
+      stan.rotation.z = sx * Math.atan2(gd, gh);
+      scene.add(stan);
+    }
   }
   // ad boards ringing the pitch
   const adC = document.createElement('canvas');
@@ -418,16 +462,24 @@ function netGrid(w: number, h: number, step: number) {
   const crowdC = document.createElement('canvas');
   crowdC.width = 256; crowdC.height = 64;
   const cx2 = crowdC.getContext('2d')!;
-  // seat rows darken toward the bottom for depth
-  const rowGrad = cx2.createLinearGradient(0, 0, 0, 64);
-  rowGrad.addColorStop(0, '#3d4a5f');
-  rowGrad.addColorStop(1, '#232c3b');
-  cx2.fillStyle = rowGrad; cx2.fillRect(0, 0, 256, 64);
-  const cols = ['#f1f5f9', '#fbbf24', '#60a5fa', '#f87171', '#4ade80', '#c084fc', '#e2e8f0', '#fb923c'];
-  for (let i = 0; i < 1500; i++) {
-    cx2.fillStyle = cols[(Math.random() * cols.length) | 0];
-    const s = Math.random() < 0.5 ? 1.6 : 2.4;
-    cx2.fillRect(Math.random() * 256, Math.random() * 64, s, s);
+  // structured SEAT ROWS (not noise): 8px rows, seats in blocks with aisle
+  // gaps, mixed fans/empty green seats — reads as a real stand
+  cx2.fillStyle = '#1d2634';
+  cx2.fillRect(0, 0, 256, 64);
+  const fanCols = ['#e2e8f0', '#fbbf24', '#60a5fa', '#f87171', '#94a3b8', '#fb923c', '#4ade80'];
+  for (let row = 0; row < 8; row++) {
+    const y = row * 8;
+    // row shadow line
+    cx2.fillStyle = 'rgba(0,0,0,0.35)';
+    cx2.fillRect(0, y + 6, 256, 2);
+    for (let sx2 = 0; sx2 < 256; sx2 += 4) {
+      if (sx2 % 64 < 3) continue; // aisles
+      const occupied = Math.random() < 0.82;
+      cx2.fillStyle = occupied
+        ? fanCols[(Math.random() * fanCols.length) | 0]
+        : '#14532d'; // empty green seat
+      cx2.fillRect(sx2, y + 1, 3, 5);
+    }
   }
   const crowdTex = new THREE.CanvasTexture(crowdC);
   crowdTex.wrapS = crowdTex.wrapT = THREE.RepeatWrapping;
