@@ -16,6 +16,12 @@ const CLIP_NAMES = {
   jog: 'Jog_Fwd_Loop',
   sprint: 'Sprint_Loop',
   stun: 'Hit_Chest',
+  // real action clips (all in the CC0 UAL pack):
+  roll: 'Roll',                 // keeper dive = committed body roll
+  pickup: 'PickUp_Table',       // keeper gathering a ground ball
+  punch: 'Punch_Cross',         // keeper parry — fists the ball away
+  throwrel: 'Spell_Simple_Shoot', // two-handed forward release (throw-in)
+  ready: 'Crouch_Idle_Loop',    // keeper set stance, knees bent, ready
 } as const;
 
 // nominal ground speed each loop was authored at (m/s) — playback timeScale
@@ -59,12 +65,19 @@ const HAIRS = [0x1c1512, 0x3b2a1a, 0x0d0d0d, 0x5b3b1a, 0x62514a];
 
 export type KitTeam = 'A' | 'B' | 'REF';
 
-function makeKitMaterial(team: KitTeam, bindH: number, seed: number) {
+function makeKitMaterial(team: KitTeam, bindH: number, seed: number, keeper = false) {
   const mat = new THREE.MeshStandardMaterial({ roughness: 0.72 });
-  // referees wear the classic all-black with bright socks trim
-  const jersey = team === 'A' ? 0x2563eb : team === 'B' ? 0xdc2626 : 0x141417;
-  const shorts = team === 'A' ? 0x122a5c : team === 'B' ? 0x5c1212 : 0x101013;
-  const socks = team === 'A' ? 0x2563eb : team === 'B' ? 0xdc2626 : 0x141417;
+  // referees wear all-black; KEEPERS wear a distinct kit (amber / emerald)
+  // with white gloves — you must be able to pick him out at a glance
+  let jersey = team === 'A' ? 0x2563eb : team === 'B' ? 0xdc2626 : 0x141417;
+  let shorts = team === 'A' ? 0x122a5c : team === 'B' ? 0x5c1212 : 0x101013;
+  let socks = team === 'A' ? 0x2563eb : team === 'B' ? 0xdc2626 : 0x141417;
+  if (keeper && team !== 'REF') {
+    jersey = team === 'A' ? 0xf59e0b : 0x10b981;
+    shorts = 0x1f2937;
+    socks = jersey;
+  }
+  const uGlove = { value: keeper ? 1 : 0 };
   const uTeam = { value: new THREE.Color(jersey) };
   const uShorts = { value: new THREE.Color(shorts) };
   const uSock = { value: new THREE.Color(socks) };
@@ -72,7 +85,7 @@ function makeKitMaterial(team: KitTeam, bindH: number, seed: number) {
   const uHair = { value: new THREE.Color(HAIRS[Math.abs(seed >> 2) % HAIRS.length]) };
   const uH = { value: bindH };
   mat.onBeforeCompile = (sh) => {
-    Object.assign(sh.uniforms, { uTeam, uShorts, uSock, uSkin, uHair, uH });
+    Object.assign(sh.uniforms, { uTeam, uShorts, uSock, uSkin, uHair, uH, uGlove });
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vBind;')
       .replace('#include <begin_vertex>', 'vBind = position;\n#include <begin_vertex>');
@@ -82,7 +95,7 @@ function makeKitMaterial(team: KitTeam, bindH: number, seed: number) {
         `#include <common>
          varying vec3 vBind;
          uniform vec3 uTeam, uShorts, uSock, uSkin, uHair;
-         uniform float uH;`,
+         uniform float uH, uGlove;`,
       )
       .replace(
         '#include <color_fragment>',
@@ -98,6 +111,9 @@ function makeKitMaterial(team: KitTeam, bindH: number, seed: number) {
           else if (f < 0.855) {
             // torso band: shirt, but bare forearms/hands (short sleeves)
             kit = (armR > uH * 0.34 && f > 0.72) ? uSkin : uTeam;
+            // KEEPER GLOVES: white from the wrists out (T-pose: hands are
+            // the farthest points from the spine)
+            if (uGlove > 0.5 && armR > uH * 0.435 && f > 0.72) kit = vec3(0.93);
           } else {
             // head zone
             kit = uSkin;
@@ -125,6 +141,8 @@ export interface CharState {
   stunned?: boolean;
   /** keeper holding the ball in his hands (arms cradle) */
   holding?: boolean;
+  /** keeper set-stance trigger: ball close enough to threaten */
+  ready?: boolean;
   /** world yaw toward the ball — the head subtly tracks it */
   lookYaw?: number;
   /** the model's world yaw (to convert lookYaw into a local head turn) */
@@ -165,7 +183,14 @@ export class CharModel {
   // throw-in: two-handed overhead throw (raise -> snap forward)
   private throwT = 0;
 
-  constructor(team: KitTeam, seed = 0) {
+  private isKeeper = false;
+  // one-shot action clip (dive/pickup/punch/throw): overrides locomotion
+  // until its timer runs out, then crossfades back
+  private oneShot: string | null = null;
+  private oneShotLeft = 0;
+
+  constructor(team: KitTeam, seed = 0, keeper = false) {
+    this.isKeeper = keeper;
     const model = skeletonClone(gltf!.scene);
     // normalize to 1.82m
     const bbox = new THREE.Box3().setFromObject(model);
@@ -178,7 +203,7 @@ export class CharModel {
       if (o.isMesh || o.isSkinnedMesh) {
         o.castShadow = true;
         o.frustumCulled = false; // skinned bounds pop otherwise
-        o.material = makeKitMaterial(team, h, seed);
+        o.material = makeKitMaterial(team, h, seed, keeper);
       }
       if (o.name === 'thigh_r') this.thighR = o;
       if (o.name === 'calf_r') this.calfR = o;
@@ -227,20 +252,52 @@ export class CharModel {
     this.kickT = 1;
   }
 
+  /** play a REAL one-shot clip over locomotion, then fall back to it */
+  private playOneShot(key: string, dur: number, timeScale = 1) {
+    const a = this.actions[key];
+    if (!a) return false;
+    a.reset();
+    a.setLoop(THREE.LoopOnce, 1);
+    a.clampWhenFinished = true;
+    a.timeScale = timeScale;
+    const prev = this.actions[this.cur];
+    if (prev && this.cur !== key) a.crossFadeFrom(prev, 0.08, false);
+    a.play();
+    this.cur = key;
+    this.oneShot = key;
+    this.oneShotLeft = dur;
+    return true;
+  }
+
   /** keeper save / celebration: both arms thrown up for ~0.8s */
   triggerArms() {
     this.armsT = 0.8;
   }
 
-  /** keeper dive: full-body stretch to his left (-1) or right (+1) */
+  /** keeper dive: the real Roll clip + body roll toward the ball side */
   triggerDive(side: number) {
-    this.diveT = 0.85;
     this.diveSide = side >= 0 ? 1 : -1;
+    if (this.playOneShot('roll', 0.85, 1.35)) {
+      this.diveT = 0.85; // pose roll composes over the clip — reads sideways
+    } else {
+      this.diveT = 0.85;
+    }
+  }
+
+  /** keeper gathering a ground ball into his gloves */
+  triggerPickup() {
+    if (!this.playOneShot('pickup', 0.9, 1.6)) this.triggerArms();
+  }
+
+  /** keeper parry: a real punch clip — fists the ball clear */
+  triggerPunch() {
+    if (!this.playOneShot('punch', 0.6, 1.4)) this.triggerArms();
   }
 
   /** throw-in: ball overhead, snapped forward with both hands */
   triggerThrow() {
     this.throwT = 0.7;
+    this.playOneShot('throwrel', 0.7, 1.3);
   }
 
   /** referee: hold a card overhead for ~2s (yellow or red) */
@@ -263,16 +320,29 @@ export class CharModel {
     const h = 0.3;
     const up = (thr: number) => sp > thr + h;
     const down = (thr: number) => sp < thr - h;
-    if (s.sliding) want = this.cur; // slide is a POSE overlay, not a clip
+    // a REAL action clip (dive/pickup/punch/throw) owns the body until done
+    if (this.oneShot) {
+      this.oneShotLeft -= dt;
+      if (this.oneShotLeft > 0) {
+        want = this.oneShot;
+      } else {
+        this.oneShot = null;
+        want = sp > 6 ? 'sprint' : sp > 2.4 ? 'jog' : sp > 0.35 ? 'walk' : 'idle';
+      }
+    } else if (s.sliding) want = this.cur; // slide is a POSE overlay, not a clip
     else if (s.stunned && this.actions.stun) want = 'stun';
     else {
-      want = this.cur === 'stun' ? 'idle' : this.cur;
+      want = this.cur === 'stun' || this.cur === 'ready' || !(this.cur in NOMINAL) && this.cur !== 'idle'
+        ? 'idle'
+        : this.cur;
       if (want === 'idle' && up(0.35)) want = 'walk';
       if (want === 'walk' && down(0.35)) want = 'idle';
       if (want === 'walk' && up(2.4)) want = 'jog';
       if (want === 'jog' && down(2.4)) want = 'walk';
       if (want === 'jog' && up(6.0)) want = 'sprint';
       if (want === 'sprint' && down(6.0)) want = 'jog';
+      // the keeper's set stance: knees bent, gloves ready, eyes on the ball
+      if (want === 'idle' && this.isKeeper && s.ready && this.actions.ready) want = 'ready';
       if (!this.actions[want]) want = 'idle';
     }
 

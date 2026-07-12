@@ -42,6 +42,7 @@ interface Snap {
     id: string; x: number; z: number; vx: number; vz: number; yaw: number;
     stamina: number; charge: number; stunned: boolean; sliding: boolean; shielding: boolean;
     holding?: boolean;
+    keeper?: boolean;
   }[];
 }
 let ws: WebSocket | null = null;
@@ -710,13 +711,13 @@ const blobShadow = (() => {
   };
 })();
 
-function getModel(id: string, name: string, team: 'A' | 'B') {
+function getModel(id: string, name: string, team: 'A' | 'B', keeper = false) {
   let m = models.get(id);
   if (!m) {
     let seed = 0;
     for (let i = 0; i < id.length; i++) seed = (seed * 31 + id.charCodeAt(i)) | 0;
     const rig = charsReady()
-      ? new CharModel(team, seed)
+      ? new CharModel(team, seed, keeper)
       : new HumanRig(team === 'A' ? 0x2563eb : 0xdc2626, seed);
     rig.group.add(blobShadow());
     scene.add(rig.group);
@@ -854,12 +855,17 @@ function onMsg(m: any) {
         if (m.id === myId) hint('YOU TAKE IT — walk to the ball and PASS / SHOOT / LOB', 2600);
       }
       if (m.kind === 'save') {
-        banner('SAVE!', 900);
         const mdl = models.get(m.id);
-        if (mdl) {
-          const rig = mdl.rig as any;
-          if (m.side && rig.triggerDive) rig.triggerDive(m.side); // full-stretch dive
-          else if (rig.triggerArms) rig.triggerArms();            // standing catch
+        const rig = mdl?.rig as any;
+        if (m.how === 'pickup') {
+          rig?.triggerPickup?.(); // bends down, gathers into the gloves
+        } else if (m.how === 'dive') {
+          rig?.triggerDive?.(m.side || 1); // committed dive — maybe beaten
+        } else {
+          banner('SAVE!', 900);
+          if (m.side && rig?.triggerDive) rig.triggerDive(m.side);      // full-stretch
+          else if (m.how === 'parry' && rig?.triggerPunch) rig.triggerPunch(); // fists it clear
+          else rig?.triggerArms?.();                                    // standing catch
         }
       }
       if (m.kind === 'throw' && m.id) {
@@ -1022,7 +1028,7 @@ function frame() {
       const name = isMe
         ? (nameInput.value.trim() || 'You')
         : (lobbyNames.get(p.id) ?? (p.id.startsWith('bot-') ? p.id.replace(/bot-\d-/, 'Bot ') : p.id));
-      const m = getModel(p.id, name, team);
+      const m = getModel(p.id, name, team, !!p.keeper);
       // OWN player renders from the local prediction, INTERPOLATED between
       // sim ticks (alpha = accumulator progress) with filtered yaw/speed —
       // this is what makes movement read smooth at any display Hz
@@ -1060,6 +1066,7 @@ function frame() {
         sliding: p.sliding,
         stunned: p.stunned,
         holding: p.holding,
+        ready: !!p.keeper && !p.holding && Math.hypot(ballVis.x - px, ballVis.z - pz) < 11,
         lookYaw: Math.atan2(ballVis.z - pz, ballVis.x - px),
         bodyYaw: pyaw,
       } as any);

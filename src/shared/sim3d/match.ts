@@ -59,6 +59,7 @@ export interface MatchSnapshot {
     sliding: boolean;
     shielding: boolean;
     holding: boolean;
+    keeper: boolean;
   }[];
   events: MatchEvent[];
 }
@@ -118,6 +119,7 @@ export class Match {
   // ---- goalkeeper hands: index of a keeper holding the ball (-1 none) ----
   holdIdx = -1;
   private holdSince = 0;
+  private pickupCooldownUntil = 0; // after a release: play with the feet a while
 
   // ---- referee ----
   ref = { x: 0, z: 6, vx: 0, vz: 0, yaw: Math.PI };
@@ -449,6 +451,7 @@ export class Match {
         )
       ) {
         this.holdIdx = -1;
+        this.pickupCooldownUntil = this.tick + 2 * this.tickRate;
       }
 
       // the referee rules on fouls raised above (advantage / free kick / cards)
@@ -804,6 +807,7 @@ export class Match {
       this.poss.owner = this.holdIdx;
       if (this.tick - this.holdSince > 3.5 * this.tickRate) {
         this.holdIdx = -1; // put it down and play with the feet
+        this.pickupCooldownUntil = this.tick + 2 * this.tickRate;
       }
       return;
     }
@@ -822,11 +826,55 @@ export class Match {
       if (!inBox) continue;
       const k = this.players[gi];
       const d = Math.hypot(bp.x - k.pos.x, bp.z - k.pos.z);
-      // a keeper's reach is his BODY plus a full-stretch dive
-      if (d > 2.1 || bp.y > 2.2) continue;
+      const notStunned = this.actStates[gi].stunUntilTick <= this.tick;
+
+      // GROUND PICKUP: a slow ball in his box, opponents closing — a real
+      // keeper bends down and gathers it into his gloves
+      if (
+        notStunned && sp < 6 && bp.y < 0.5 && d < 1.0 &&
+        this.tick >= this.pickupCooldownUntil &&
+        this.holdIdx < 0
+      ) {
+        let oppNear = false;
+        for (let i = 0; i < this.players.length; i++) {
+          if (this.meta[i].team === team) continue;
+          const p = this.players[i].pos;
+          if (Math.hypot(p.x - bp.x, p.z - bp.z) < 7) { oppNear = true; break; }
+        }
+        if (oppNear) {
+          this.holdIdx = gi;
+          this.holdSince = this.tick;
+          this.poss = { owner: gi, ownerSince: this.tick };
+          this.ball.setLinvel({ x: 0, y: 0, z: 0 }, true);
+          this.actStates[gi].stunUntilTick = this.tick + Math.round(0.45 * this.tickRate);
+          this.events.push({ kind: 'save', playerIndex: gi, detail: 'pickup', side: 0 });
+          this.lastTouch = gi;
+          continue;
+        }
+      }
+
       // moving toward our goal = a shot to deal with
       const towardGoal = bv.x * own > 1.5;
-      if (sp > 8.5 && towardGoal && this.actStates[gi].stunUntilTick <= this.tick) {
+
+      // COMMIT THE DIVE even for balls passing BEYOND reach — a real keeper
+      // goes down for everything near the frame; sometimes he's just beaten.
+      // Only for laterally-unreachable balls: a reachable shot must never be
+      // wasted on an early dive (the save block below handles those).
+      const latNow = Math.cos(k.yaw) * (bp.z - k.pos.z) - Math.sin(k.yaw) * (bp.x - k.pos.x);
+      if (
+        sp > 8.5 && towardGoal && notStunned && bp.y < 2.2 &&
+        Math.abs(latNow) > 2.0 && Math.abs(latNow) < 3.6 && d < 4.5
+      ) {
+        k.velX += (bp.x - k.pos.x) * 2.4;
+        k.velZ += (bp.z - k.pos.z) * 2.4;
+        this.actStates[gi].stunUntilTick = this.tick + Math.round(0.8 * this.tickRate);
+        this.events.push({ kind: 'save', playerIndex: gi, detail: 'dive', side: Math.sign(latNow) || 1 });
+        continue;
+      }
+
+      // a keeper's reach is his BODY plus a full-stretch dive
+      if (d > 2.1 || bp.y > 2.2) continue;
+      if (sp > 8.5 && towardGoal && notStunned) {
         // which side of his body the ball is on (for the dive animation):
         // signed lateral offset relative to his facing
         const lat = Math.cos(k.yaw) * (bp.z - k.pos.z) - Math.sin(k.yaw) * (bp.x - k.pos.x);
@@ -937,6 +985,7 @@ export class Match {
         sliding: this.tick < this.actStates[i].slideUntilTick,
         shielding: !!this.inputs[i].shield,
         holding: this.holdIdx === i,
+        keeper: !!this.meta[i].keeper,
       })),
       events: this.events,
     };
