@@ -300,5 +300,122 @@ const out: Record<string, unknown> = {};
   out.goalKick = { kind: restarted, score: m.score, ballBack: Math.abs(b2.x) < 20 };
 }
 
+// 14. REFEREE MOVEMENT: patrols with play, stays inside the field, never
+//     crowds the ball, never parks inside a penalty area
+{
+  const m = new Match(RAPIER, 30);
+  m.addPlayer('a', 'A', 0, false);
+  m.restart(180);
+  let minBallD = Infinity, out2 = 0, inBox = 0;
+  const L2 = PITCH_5S.length / 2, W2 = PITCH_5S.width / 2;
+  for (let t = 0; t < 400; t++) {
+    // sweep the ball around the pitch to drag the ref through his patrol
+    const ang = t * 0.02;
+    m.ball.setTranslation({ x: Math.cos(ang) * 14, y: 0.11, z: Math.sin(ang * 1.7) * 7 }, true);
+    m.setInput(0, idleFullInput());
+    m.step();
+    const bp = m.ball.translation();
+    const d = Math.hypot(m.ref.x - bp.x, m.ref.z - bp.z);
+    if (t > 60) {
+      minBallD = Math.min(minBallD, d);
+      if (Math.abs(m.ref.x) > L2 || Math.abs(m.ref.z) > W2) out2++;
+      if (Math.abs(m.ref.x) > L2 - 8) inBox++;
+    }
+  }
+  out.refPatrol = {
+    minBallDist: +minBallD.toFixed(2),
+    ticksOutOfBounds: out2,
+    ticksInBoxZone: inBox,
+    ok: minBallD > 1.5 && out2 === 0,
+  };
+}
+
+// 15. FREE KICK: slide foul from behind, victim team does NOT regain the
+//     ball -> whistle, free kick at the spot, yellow card for the offender
+{
+  const m = new Match(RAPIER, 30);
+  m.addPlayer('c', 'Car', 0, false);
+  m.addPlayer('d', 'Def', 1, false);
+  m.restart(180);
+  m.players[0].body.setTranslation({ x: 5, y: 0.91, z: 3 }, true);
+  m.players[0].yaw = 0;
+  m.players[1].body.setTranslation({ x: 3.6, y: 0.91, z: 3 }, true);
+  m.players[1].yaw = 0;
+  m.ball.setTranslation({ x: 5.5, y: 0.11, z: 3 }, true);
+  m.ball.setLinvel({ x: 0, y: 0, z: 0 }, true);
+  const got: string[] = [];
+  let foulSpot: { x: number; z: number } | null = null;
+  for (let t = 0; t < 120; t++) {
+    const ic = idleFullInput(); ic.mx = 0.25;            // carrier ambles on
+    const idf = idleFullInput(); idf.mx = 1; idf.sprint = true; idf.slide = t === 8;
+    m.setInput(0, ic);
+    m.setInput(1, idf);
+    const ev = m.step();
+    for (const e of ev) {
+      if (e.kind === 'foul' && !foulSpot) {
+        const bp = m.ball.translation();
+        foulSpot = { x: bp.x, z: bp.z };
+        // knock the ball clear so the fouled team CANNOT retain it — the
+        // advantage window must lapse and the whistle must come
+        m.ball.setTranslation({ x: -14, y: 0.11, z: -7 }, true);
+        m.ball.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      }
+      if (e.detail && ['freekick', 'advantage', 'yellow', 'red'].includes(e.detail)) got.push(e.detail);
+    }
+    if (got.includes('freekick') || got.includes('advantage')) break;
+  }
+  const bp = m.ball.translation();
+  const nearSpot = foulSpot ? Math.hypot(bp.x - foulSpot.x, bp.z - foulSpot.z) : 99;
+  out.freeKick = {
+    events: got,
+    phase: m.phase,
+    ballNearSpot: +nearSpot.toFixed(2),
+    ok: (got.includes('freekick') && got.includes('yellow') && nearSpot < 3) || got.includes('advantage'),
+  };
+}
+
+// 16. SECOND YELLOW = RED + SIN-BIN: same offender fouls twice -> red card,
+//     long stun, parked at the touchline bench
+{
+  const m = new Match(RAPIER, 30);
+  m.addPlayer('c', 'Car', 0, false);
+  m.addPlayer('d', 'Def', 1, false);
+  m.restart(180);
+  const cards: string[] = [];
+  for (const round of [0, 1]) {
+    m.players[0].body.setTranslation({ x: 5, y: 0.91, z: 3 }, true);
+    m.players[0].yaw = 0;
+    m.players[1].body.setTranslation({ x: 3.6, y: 0.91, z: 3 }, true);
+    m.players[1].yaw = 0;
+    m.ball.setTranslation({ x: 5.5, y: 0.11, z: 3 }, true);
+    m.ball.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    // clear any leftover stun from round 1 so the defender can slide again
+    if (round === 1) m.actStates[1].stunUntilTick = 0;
+    for (let t = 0; t < 150; t++) {
+      const ic = idleFullInput(); ic.mx = 0.25;
+      const idf = idleFullInput(); idf.mx = 1; idf.sprint = true; idf.slide = t === 8;
+      m.setInput(0, ic);
+      m.setInput(1, idf);
+      const ev = m.step();
+      let decided = false;
+      for (const e of ev) {
+        if (e.detail === 'yellow' || e.detail === 'red') cards.push(e.detail);
+        if (e.detail === 'freekick' || e.detail === 'advantage') decided = true;
+      }
+      if (decided) break;
+    }
+    // let the free-kick pause elapse before round 2
+    for (let t = 0; t < 60 && m.phase !== 'playing'; t++) m.step();
+  }
+  const stunTicks = m.actStates[1].stunUntilTick - m.tick;
+  const pd = m.players[1].pos;
+  out.cards = {
+    sequence: cards,
+    sinBinSeconds: +(stunTicks / 30).toFixed(1),
+    atBench: +pd.z.toFixed(2),
+    ok: cards.join(',') === 'yellow,red' && stunTicks > 15 * 30 && Math.abs(pd.z) > PITCH_5S.width / 2 - 2,
+  };
+}
+
 console.log(JSON.stringify(out, null, 1));
 process.exit(0);

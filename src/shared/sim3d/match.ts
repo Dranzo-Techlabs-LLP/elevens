@@ -9,7 +9,7 @@ import { SimPlayer, defaultMoveTune, type MoveTune } from './player';
 import { defaultControlTune, stepBallControl, type ControlState, type ControlTune, type Possession } from './control';
 import { newActionState, stepActions, type ActionInput, type ActionState, type MatchEvent } from './actions';
 
-export type Phase = 'lobby' | 'playing' | 'goal' | 'ended';
+export type Phase = 'lobby' | 'playing' | 'goal' | 'freekick' | 'ended';
 
 export interface PlayerFullInput {
   mx: number;
@@ -42,6 +42,7 @@ export interface MatchSnapshot {
   timeLeft: number;
   owner: string | null; // id of the player with close control (carry)
   ball: { x: number; y: number; z: number; vx: number; vy: number; vz: number };
+  ref: { x: number; z: number; yaw: number; speed: number };
   players: {
     id: string;
     x: number;
@@ -78,6 +79,11 @@ export class Match {
   private pauseUntil = 0;
   private prevBall: { x: number; y: number; z: number } = { x: 0, y: BALL.radius, z: 0 };
   events: MatchEvent[] = [];
+
+  // ---- referee ----
+  ref = { x: 0, z: 6, vx: 0, vz: 0, yaw: Math.PI };
+  private yellows = new Map<number, number>(); // playerIndex -> yellow count
+  private pendingFoul: null | { tick: number; x: number; z: number; victimTeam: 0 | 1; offender: number } = null;
 
   moveTune: MoveTune = defaultMoveTune();
   ctlTune: ControlTune = defaultControlTune();
@@ -225,6 +231,10 @@ export class Match {
       this.phase = 'playing';
       this.events.push({ kind: 'kick', playerIndex: -1, detail: 'kickoff' });
     }
+    if (this.phase === 'freekick' && this.tick >= this.pauseUntil) {
+      this.phase = 'playing';
+      this.events.push({ kind: 'kick', playerIndex: -1, detail: 'play-on' });
+    }
 
     if (this.phase === 'playing') {
       // movement (stun gates input; slide overrides velocity inside actions)
@@ -317,6 +327,9 @@ export class Match {
         this.inputs,
       );
 
+      // the referee rules on fouls raised above (advantage / free kick / cards)
+      this.refereeLaws();
+
       // aero + integrate
       this.applyBallAero(dt);
       this.world.step();
@@ -369,7 +382,129 @@ export class Match {
       this.world.step(); // let the ball settle during pauses
     }
 
+    // the official keeps moving through pauses (runs to the spot, backs off
+    // for kickoffs) — he is scenery to the physics, never to the eye
+    if (this.phase !== 'lobby') this.stepRef(dt);
+
     return this.events;
+  }
+
+  // ---------------- referee ----------------
+
+  /**
+   * Referee movement — models a real official on a diagonal patrol:
+   * shadow play from ~7m, biased to the classic bottom-left <-> top-right
+   * diagonal, never inside the penalty boxes, backing off when play comes
+   * at him. Jogs normally, sprints on transitions. No collider — a real
+   * ref dodges; ours never alters play.
+   */
+  private stepRef(dt: number) {
+    const bp = this.ball.translation();
+    // diagonal anchor: offset from the ball toward the diagonal side away
+    // from the attacking direction of the team in possession
+    const diag = bp.x * 0.5; // stay on the ball's half, trailing
+    let tx = bp.x - Math.sign(bp.x || 1) * 4;
+    let tz = bp.z > 0 ? bp.z - 6 : bp.z + 6; // opposite flank, ~6m
+    // clear of the penalty boxes
+    tx = Math.max(-L / 2 + 8, Math.min(L / 2 - 8, tx + diag * 0.2));
+    tz = Math.max(-W / 2 + 1.5, Math.min(W / 2 - 1.5, tz));
+    // never crowd the ball: if inside 4m of it, back away radially
+    const dbx = tx - bp.x, dbz = tz - bp.z;
+    const db = Math.hypot(dbx, dbz);
+    if (db < 4 && db > 0.01) {
+      tx = bp.x + (dbx / db) * 4;
+      tz = bp.z + (dbz / db) * 4;
+    }
+    // seek with jog/sprint speeds and player-like accel
+    const dx = tx - this.ref.x, dz = tz - this.ref.z;
+    const d = Math.hypot(dx, dz);
+    const want = d > 7 ? 6.6 : d > 1.2 ? 3.6 : 0; // sprint / jog / hold
+    const wvx = d > 0.01 ? (dx / d) * want : 0;
+    const wvz = d > 0.01 ? (dz / d) * want : 0;
+    const k = 1 - Math.exp(-4 * dt); // accel ease
+    this.ref.vx += (wvx - this.ref.vx) * k;
+    this.ref.vz += (wvz - this.ref.vz) * k;
+    this.ref.x += this.ref.vx * dt;
+    this.ref.z += this.ref.vz * dt;
+    // always watching the ball
+    const face = Math.atan2(bp.z - this.ref.z, bp.x - this.ref.x);
+    let dy = face - this.ref.yaw;
+    while (dy > Math.PI) dy -= Math.PI * 2;
+    while (dy < -Math.PI) dy += Math.PI * 2;
+    this.ref.yaw += dy * (1 - Math.exp(-6 * dt));
+  }
+
+  /**
+   * The laws: a foul raises a pending decision. If the fouled team keeps
+   * the ball (0.7s window) the ref plays ADVANTAGE; otherwise he whistles,
+   * awards a FREE KICK at the spot, and books the offender — slide fouls
+   * are a straight yellow, a second yellow is a red + 20s sin-bin.
+   */
+  private refereeLaws() {
+    // collect new fouls raised this tick by the action layer
+    for (const ev of this.events) {
+      if (ev.kind === 'foul' && !this.pendingFoul && ev.playerIndex >= 0) {
+        const victimTeam = (1 - this.meta[ev.playerIndex].team) as 0 | 1;
+        const bp = this.ball.translation();
+        this.pendingFoul = { tick: this.tick, x: bp.x, z: bp.z, victimTeam, offender: ev.playerIndex };
+      }
+    }
+    if (!this.pendingFoul) return;
+    const pf = this.pendingFoul;
+    const ownerTeam = this.poss.owner >= 0 ? this.meta[this.poss.owner].team : -1;
+    if (ownerTeam === pf.victimTeam && this.tick - pf.tick > 3) {
+      // fouled team has it — play the advantage
+      this.events.push({ kind: 'kick', playerIndex: pf.offender, detail: 'advantage' });
+      this.bookOffender(pf.offender); // the card still comes
+      this.pendingFoul = null;
+      return;
+    }
+    if (this.tick - pf.tick > Math.round(0.7 * this.tickRate)) {
+      // whistle: free kick where it happened
+      const fx = Math.max(-L / 2 + 1.5, Math.min(L / 2 - 1.5, pf.x));
+      const fz = Math.max(-W / 2 + 1.5, Math.min(W / 2 - 1.5, pf.z));
+      this.restartBall(fx, fz, 'goalkick'); // reuse dead-ball placement
+      this.events.pop(); // drop the goalkick event; it's a free kick
+      this.events.push({ kind: 'kick', playerIndex: pf.offender, detail: 'freekick' });
+      // nearest fouled-team player steps up to take it
+      let taker = -1, td = Infinity;
+      for (let i = 0; i < this.players.length; i++) {
+        if (this.meta[i].team !== pf.victimTeam) continue;
+        const p = this.players[i].pos;
+        const d = Math.hypot(p.x - fx, p.z - fz);
+        if (d < td) { td = d; taker = i; }
+      }
+      if (taker >= 0) {
+        const back = this.meta[taker].team === 0 ? -1.2 : 1.2;
+        this.players[taker].body.setTranslation(
+          { x: Math.max(-L / 2 + 1, Math.min(L / 2 - 1, fx + back)), y: PLAYER.height / 2, z: fz },
+          true,
+        );
+      }
+      this.bookOffender(pf.offender);
+      this.phase = 'freekick';
+      this.pauseUntil = this.tick + Math.round(1.3 * this.tickRate);
+      this.pendingFoul = null;
+    }
+  }
+
+  private bookOffender(i: number) {
+    const n = (this.yellows.get(i) ?? 0) + 1;
+    this.yellows.set(i, n);
+    if (n === 1) {
+      this.events.push({ kind: 'kick', playerIndex: i, detail: 'yellow' });
+    } else {
+      // second yellow: red card + sin-bin — 20s frozen at his own bench
+      this.events.push({ kind: 'kick', playerIndex: i, detail: 'red' });
+      this.yellows.set(i, 0);
+      const st = this.actStates[i];
+      st.stunUntilTick = this.tick + Math.round(20 * this.tickRate);
+      const benchX = this.meta[i].team === 0 ? -L / 4 : L / 4;
+      this.players[i].body.setTranslation(
+        { x: benchX, y: PLAYER.height / 2, z: W / 2 - 0.8 },
+        true,
+      );
+    }
   }
 
   /** dead-ball restart: place the ball, kill motion, release possession */
@@ -440,6 +575,12 @@ export class Match {
       timeLeft: Math.max(0, Math.ceil(this.timeLeft)),
       owner: this.poss.owner >= 0 ? this.meta[this.poss.owner].id : null,
       ball: { x: r1(bp.x), y: r1(bp.y), z: r1(bp.z), vx: r1(bv.x), vy: r1(bv.y), vz: r1(bv.z) },
+      ref: {
+        x: r1(this.ref.x),
+        z: r1(this.ref.z),
+        yaw: Math.round(this.ref.yaw * 100) / 100,
+        speed: r1(Math.hypot(this.ref.vx, this.ref.vz)),
+      },
       players: this.players.map((p, i) => ({
         id: this.meta[i].id,
         x: r1(p.pos.x),

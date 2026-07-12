@@ -215,6 +215,23 @@ export class Room3D {
         this.broadcast({ type: 'e3', kind: 'kickoff' });
       } else if (ev.detail === 'throwin' || ev.detail === 'goalkick') {
         this.broadcast({ type: 'e3', kind: 'restart', what: ev.detail });
+      } else if (ev.detail === 'freekick' || ev.detail === 'advantage') {
+        this.broadcast({
+          type: 'e3',
+          kind: ev.detail,
+          id: this.match.meta[ev.playerIndex]?.id,
+          name: this.match.meta[ev.playerIndex]?.name,
+        });
+      } else if (ev.detail === 'yellow' || ev.detail === 'red') {
+        this.broadcast({
+          type: 'e3',
+          kind: 'card',
+          color: ev.detail,
+          id: this.match.meta[ev.playerIndex]?.id,
+          name: this.match.meta[ev.playerIndex]?.name,
+        });
+      } else if (ev.detail === 'play-on') {
+        // silent resume after a free kick pause — no banner
       } else if (ev.kind === 'foul') {
         this.broadcast({ type: 'e3', kind: 'foul', id: this.match.meta[ev.playerIndex]?.id });
       } else if (ev.kind === 'kick') {

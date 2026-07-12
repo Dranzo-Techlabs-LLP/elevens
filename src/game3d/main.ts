@@ -34,6 +34,7 @@ interface Snap {
   owner: string | null;
   ack: number;
   ball: { x: number; y: number; z: number; vx: number; vy: number; vz: number };
+  ref?: { x: number; z: number; yaw: number; speed: number };
   players: {
     id: string; x: number; z: number; vx: number; vz: number; yaw: number;
     stamina: number; charge: number; stunned: boolean; sliding: boolean; shielding: boolean;
@@ -608,7 +609,9 @@ const ballShadow = (() => {
 // fallback otherwise. Both expose the same update/trigger surface.
 interface Model { rig: HumanRig | CharModel; label: THREE.Sprite; ring: THREE.Mesh; ringMat: THREE.MeshBasicMaterial; }
 const models = new Map<string, Model>();
+let refModel: CharModel | null = null;
 (window as any).__models = models; // debug/verification hook
+(window as any).__ref = () => refModel;
 (window as any).__ballVis = ballVis;
 function label(text: string) {
   const c = document.createElement('canvas');
@@ -750,6 +753,12 @@ function onMsg(m: any) {
       if (m.kind === 'end') winner = m.winner;
       if (m.kind === 'foul') banner('FOUL!', 1000);
       if (m.kind === 'restart') banner(m.what === 'throwin' ? 'THROW-IN' : 'GOAL KICK', 1000);
+      if (m.kind === 'freekick') banner('FREE KICK', 1400);
+      if (m.kind === 'advantage') banner('ADVANTAGE — PLAY ON', 1200);
+      if (m.kind === 'card') {
+        banner(`${m.color === 'red' ? 'RED' : 'YELLOW'} CARD — ${m.name ?? ''}`, 1800);
+        refModel?.showCard(m.color === 'red' ? 'red' : 'yellow');
+      }
       if (m.kind === 'kick' && m.id) {
         const mdl = models.get(m.id);
         if (mdl && 'triggerKick' in mdl.rig) (mdl.rig as any).triggerKick();
@@ -789,6 +798,14 @@ function sample() {
       const pa = a.s.players.find((p) => p.id === pb.id) ?? pb;
       return { ...pb, x: lerp(pa.x, pb.x), z: lerp(pa.z, pb.z), yaw: la(pa.yaw, pb.yaw) };
     }),
+    ref: b.s.ref
+      ? {
+          x: lerp(a.s.ref?.x ?? b.s.ref.x, b.s.ref.x),
+          z: lerp(a.s.ref?.z ?? b.s.ref.z, b.s.ref.z),
+          yaw: la(a.s.ref?.yaw ?? b.s.ref.yaw, b.s.ref.yaw),
+          speed: b.s.ref.speed ?? 0,
+        }
+      : null,
   };
 }
 
@@ -921,6 +938,23 @@ function frame() {
     }
     for (const [id, m] of models) {
       if (!seen.has(id)) { scene.remove(m.rig.group); models.delete(id); }
+    }
+
+    // the referee — all-black official shadowing play (no label, no ring)
+    if (view.ref && charsReady()) {
+      if (!refModel) {
+        refModel = new CharModel('REF', 7);
+        scene.add(refModel.group);
+      }
+      refModel.group.position.set(view.ref.x, 0, view.ref.z);
+      refModel.group.rotation.y = -view.ref.yaw;
+      refModel.update(dtReal, {
+        speed: view.ref.speed,
+        stamina: 1,
+        yawRate: 0,
+        lookYaw: Math.atan2(ballVis.z - view.ref.z, ballVis.x - view.ref.x),
+        bodyYaw: view.ref.yaw,
+      });
     }
 
     // HUD — broadcast scorebug

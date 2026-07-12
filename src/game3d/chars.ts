@@ -57,11 +57,17 @@ export const charsReady = () => !!gltf;
 const SKINS = [0xf1c27d, 0xe0ac69, 0xc68642, 0x8d5524, 0xffdbac, 0xba8a63];
 const HAIRS = [0x1c1512, 0x3b2a1a, 0x0d0d0d, 0x5b3b1a, 0x62514a];
 
-function makeKitMaterial(team: 'A' | 'B', bindH: number, seed: number) {
+export type KitTeam = 'A' | 'B' | 'REF';
+
+function makeKitMaterial(team: KitTeam, bindH: number, seed: number) {
   const mat = new THREE.MeshStandardMaterial({ roughness: 0.72 });
-  const uTeam = { value: new THREE.Color(team === 'A' ? 0x2563eb : 0xdc2626) };
-  const uShorts = { value: new THREE.Color(team === 'A' ? 0x122a5c : 0x5c1212) };
-  const uSock = { value: new THREE.Color(team === 'A' ? 0x2563eb : 0xdc2626) };
+  // referees wear the classic all-black with bright socks trim
+  const jersey = team === 'A' ? 0x2563eb : team === 'B' ? 0xdc2626 : 0x141417;
+  const shorts = team === 'A' ? 0x122a5c : team === 'B' ? 0x5c1212 : 0x101013;
+  const socks = team === 'A' ? 0x2563eb : team === 'B' ? 0xdc2626 : 0x141417;
+  const uTeam = { value: new THREE.Color(jersey) };
+  const uShorts = { value: new THREE.Color(shorts) };
+  const uSock = { value: new THREE.Color(socks) };
   const uSkin = { value: new THREE.Color(SKINS[Math.abs(seed) % SKINS.length]) };
   const uHair = { value: new THREE.Color(HAIRS[Math.abs(seed >> 2) % HAIRS.length]) };
   const uH = { value: bindH };
@@ -142,8 +148,13 @@ export class CharModel {
   private kickT = 0;
   private slideBlend = 0; // 0..1 smoothed slide pose weight
   private speedF = 0; // filtered speed for stable state picks
+  // referee card ceremony: arm held high, card in hand
+  private upperArmL: THREE.Object3D | null = null;
+  private handL: THREE.Object3D | null = null;
+  private cardMesh: THREE.Mesh | null = null;
+  private cardT = 0;
 
-  constructor(team: 'A' | 'B', seed = 0) {
+  constructor(team: KitTeam, seed = 0) {
     const model = skeletonClone(gltf!.scene);
     // normalize to 1.82m
     const bbox = new THREE.Box3().setFromObject(model);
@@ -163,7 +174,22 @@ export class CharModel {
       if (o.name === 'thigh_l') this.thighL = o;
       if (o.name === 'calf_l') this.calfL = o;
       if (o.name === 'Head') this.head = o;
+      if (o.name === 'upperarm_l') this.upperArmL = o;
+      if (o.name === 'hand_l') this.handL = o;
     });
+    // the card lives in the ref's hand, hidden until shown. Bone space still
+    // carries the source scale, so size it in world meters divided out.
+    if (team === 'REF' && this.handL) {
+      const s = 1.82 / h;
+      const geo = new THREE.PlaneGeometry(0.09 / s, 0.12 / s);
+      this.cardMesh = new THREE.Mesh(
+        geo,
+        new THREE.MeshBasicMaterial({ color: 0xfacc15, side: THREE.DoubleSide }),
+      );
+      this.cardMesh.position.set(0, 0.1 / s, 0);
+      this.cardMesh.visible = false;
+      this.handL.add(this.cardMesh);
+    }
     this.pose.add(model);
     this.group.add(this.pose);
 
@@ -187,6 +213,16 @@ export class CharModel {
 
   triggerKick() {
     this.kickT = 1;
+  }
+
+  /** referee: hold a card overhead for ~2s (yellow or red) */
+  showCard(color: 'yellow' | 'red') {
+    this.cardT = 2.2;
+    if (this.cardMesh) {
+      (this.cardMesh.material as THREE.MeshBasicMaterial).color.set(
+        color === 'yellow' ? 0xfacc15 : 0xdc2626,
+      );
+    }
   }
 
   update(dt: number, s: CharState) {
@@ -239,6 +275,17 @@ export class CharModel {
       // UE-style skeleton: swing the thigh forward, extend the calf
       this.thighR?.rotateZ(-1.15 * k);
       this.calfR?.rotateZ(0.35 * k);
+    }
+
+    // card ceremony overlay: left arm straight up, card visible in hand
+    if (this.cardT > 0) {
+      this.cardT = Math.max(0, this.cardT - dt);
+      // ease in fast, hold, ease out
+      const a = Math.min(1, Math.min(this.cardT / 0.25, (2.2 - this.cardT) / 0.25));
+      this.upperArmL?.rotateZ(2.35 * a);
+      if (this.cardMesh) this.cardMesh.visible = a > 0.4;
+    } else if (this.cardMesh?.visible) {
+      this.cardMesh.visible = false;
     }
 
     // head subtly tracks the ball (life!), clamped to a natural range

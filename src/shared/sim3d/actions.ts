@@ -186,7 +186,16 @@ export function stepActions(ctx: ActionCtx, inputs: ActionInput[]) {
       // committed low lunge: velocity overridden, big reach
       pl.velX = st.slideDirX * 7.5;
       pl.velZ = st.slideDirZ * 7.5;
-      if (distToBall < 1.35 && ballPlayable) {
+      // TACKLE FROM BEHIND (the law): if the carrier's body sits between the
+      // slider and the ball, the lunge goes through the man first — that is
+      // never a clean win, it's a foul when contact lands
+      let throughBody = false;
+      if (ctx.poss.owner >= 0 && ctx.poss.owner !== i) {
+        const carrier = players[ctx.poss.owner];
+        const dCarrier = Math.hypot(carrier.pos.x - pl.pos.x, carrier.pos.z - pl.pos.z);
+        throughBody = dCarrier < distToBall - 0.05;
+      }
+      if (distToBall < 1.35 && ballPlayable && !throughBody) {
         // won it: ball knocked on in slide direction, carrier dispossessed
         ball.setLinvel(
           { x: st.slideDirX * 7, y: 0.8, z: st.slideDirZ * 7 },
@@ -200,9 +209,10 @@ export function stepActions(ctx: ActionCtx, inputs: ActionInput[]) {
         st.stunUntilTick = tick + Math.round(0.45 * tickRate); // get up
       } else if (ctx.lastTouch >= 0 && ctx.teams[ctx.lastTouch] !== ctx.teams[i]) {
         // body contact with the carrier without playing the ball = FOUL
+        // (either the ball is out of reach, or the lunge came through the man)
         const victim = players[ctx.lastTouch];
         const pd = Math.hypot(victim.pos.x - pl.pos.x, victim.pos.z - pl.pos.z);
-        if (pd < 0.7 && distToBall > 1.0) {
+        if (pd < 0.7 && (distToBall > 1.0 || throughBody)) {
           st.slideUntilTick = tick;
           st.stunUntilTick = tick + Math.round(1.6 * tickRate);
           ctx.events.push({ kind: 'foul', playerIndex: i });
