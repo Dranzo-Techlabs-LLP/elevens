@@ -64,6 +64,7 @@ async function boot() {
   // M3: ball control state + a static dummy defender to shield against
   const controlTune = defaultControlTune();
   const ctlStates: ControlState[] = [{ cooldown: 0 }];
+  const labPoss = { owner: -1, ownerSince: 0 };
   let tick = 0;
   // (positioned OFF the +x feed lane so serves reach the player untouched)
   const dummyBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(-10.5, 1.82 / 2, 7));
@@ -397,7 +398,7 @@ async function boot() {
       const inp = readInput();
       player.step(DT, inp, moveTune);
       const ctlEvents = stepBallControl(
-        DT, tick, ballBody, [player], ctlStates, [!!inp.shield], controlTune,
+        DT, tick, ballBody, [player], ctlStates, [!!inp.shield], labPoss, controlTune,
       );
       {
         // control debug: min ball distance + cooldown state, sampled per tick

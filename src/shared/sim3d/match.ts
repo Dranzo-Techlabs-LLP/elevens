@@ -6,7 +6,7 @@
 import type RAPIER from '@dimforge/rapier3d-compat';
 import { BALL, MATCH, PITCH_5S, PLAYER } from '../config3d';
 import { SimPlayer, defaultMoveTune, type MoveTune } from './player';
-import { defaultControlTune, stepBallControl, type ControlState, type ControlTune } from './control';
+import { defaultControlTune, stepBallControl, type ControlState, type ControlTune, type Possession } from './control';
 import { newActionState, stepActions, type ActionInput, type ActionState, type MatchEvent } from './actions';
 
 export type Phase = 'lobby' | 'playing' | 'goal' | 'ended';
@@ -69,6 +69,7 @@ export class Match {
   actStates: ActionState[] = [];
   inputs: PlayerFullInput[] = [];
   lastTouch = -1;
+  poss: Possession = { owner: -1, ownerSince: 0 };
   tick = 0;
   phase: Phase = 'playing';
   score: [number, number] = [0, 0];
@@ -176,6 +177,7 @@ export class Match {
   }
 
   kickoff() {
+    this.poss = { owner: -1, ownerSince: 0 };
     this.prevBall = { x: 0, y: BALL.radius, z: 0 };
     this.ball.setTranslation({ x: 0, y: BALL.radius, z: 0 }, true);
     this.ball.setLinvel({ x: 0, y: 0, z: 0 }, true);
@@ -263,9 +265,11 @@ export class Match {
         this.players,
         this.ctlStates,
         this.inputs.map((inp, i) => !!inp.shield && this.tick >= this.actStates[i].stunUntilTick),
+        this.poss,
         this.ctlTune,
       );
       for (const ev of ctlEvents) this.lastTouch = ev.playerIndex;
+      if (this.poss.owner >= 0) this.lastTouch = this.poss.owner;
 
       // verbs
       stepActions(
@@ -279,6 +283,8 @@ export class Match {
           states: this.actStates,
           lastTouch: this.lastTouch,
           events: this.events,
+          poss: this.poss,
+          ctlStates: this.ctlStates,
         },
         this.inputs,
       );

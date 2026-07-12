@@ -17,6 +17,7 @@
 import type RAPIER from '@dimforge/rapier3d-compat';
 import { BALL, KICK, PITCH_5S, TOUCH } from '../config3d';
 import type { SimPlayer } from './player';
+import type { ControlState, Possession } from './control';
 
 export interface ActionInput {
   pass: boolean;
@@ -86,6 +87,9 @@ export interface ActionCtx {
   /** which player last touched/controlled the ball (foul attribution) */
   lastTouch: number;
   events: MatchEvent[];
+  /** possession — tackles/kicks break it so the carry spring lets go */
+  poss: Possession;
+  ctlStates: ControlState[];
 }
 
 export function stepActions(ctx: ActionCtx, inputs: ActionInput[]) {
@@ -127,12 +131,25 @@ export function stepActions(ctx: ActionCtx, inputs: ActionInput[]) {
 
       // ---- standing tackle (tap) ----
       if (inp.tackle && !st.prevTackle && distToBall < 1.3 && ballPlayable) {
-        // poke the ball sideways-forward away from its current carrier
-        const pokeYaw = Math.atan2(dz, dx) + (noiseSign(tick, i) ? 0.5 : -0.5);
+        // poke the ball AWAY FROM ITS CARRIER (aiming tackler->ball drives
+        // it into the carrier's shins and it just parks at his feet again),
+        // and BREAK possession so the carry spring lets go
+        let pokeYaw: number;
+        if (ctx.poss.owner >= 0 && ctx.poss.owner !== i) {
+          const carrier = players[ctx.poss.owner];
+          pokeYaw = Math.atan2(bp.z - carrier.pos.z, bp.x - carrier.pos.x);
+        } else {
+          pokeYaw = Math.atan2(dz, dx);
+        }
+        pokeYaw += (noiseSign(tick, i) ? 0.35 : -0.35);
         ball.setLinvel(
-          { x: Math.cos(pokeYaw) * 6, y: 0.5, z: Math.sin(pokeYaw) * 6 },
+          { x: Math.cos(pokeYaw) * 8, y: 0.6, z: Math.sin(pokeYaw) * 8 },
           true,
         );
+        if (ctx.poss.owner >= 0 && ctx.poss.owner !== i) {
+          ctx.ctlStates[ctx.poss.owner].cooldown = TOUCH.dispossessCooldown;
+        }
+        ctx.poss.owner = -1;
         ctx.events.push({ kind: 'tackle', playerIndex: i });
         // body-first challenge on a recent carrier = foul risk
         if (ctx.lastTouch >= 0 && ctx.lastTouch !== i && ctx.teams[ctx.lastTouch] !== ctx.teams[i]) {
@@ -161,11 +178,15 @@ export function stepActions(ctx: ActionCtx, inputs: ActionInput[]) {
       pl.velX = st.slideDirX * 7.5;
       pl.velZ = st.slideDirZ * 7.5;
       if (distToBall < 1.35 && ballPlayable) {
-        // won it: ball knocked on in slide direction
+        // won it: ball knocked on in slide direction, carrier dispossessed
         ball.setLinvel(
           { x: st.slideDirX * 7, y: 0.8, z: st.slideDirZ * 7 },
           true,
         );
+        if (ctx.poss.owner >= 0 && ctx.poss.owner !== i) {
+          ctx.ctlStates[ctx.poss.owner].cooldown = TOUCH.dispossessCooldown;
+        }
+        ctx.poss.owner = -1;
         st.slideUntilTick = tick; // slide consumed
         st.stunUntilTick = tick + Math.round(0.45 * tickRate); // get up
       } else if (ctx.lastTouch >= 0 && ctx.teams[ctx.lastTouch] !== ctx.teams[i]) {
@@ -195,6 +216,9 @@ export function stepActions(ctx: ActionCtx, inputs: ActionInput[]) {
       if (d2 <= KICK_RANGE && ballPlayable) {
         executeKick(ctx, i, k.kind, k.charge, k.yaw);
         st.kickCooldownUntil = tick + Math.round(0.4 * tickRate);
+        // the ball is away — release it so the carry spring doesn't chase it
+        ctx.poss.owner = -1;
+        ctx.ctlStates[i].cooldown = 0.35;
         ctx.events.push({ kind: 'kick', playerIndex: i, detail: k.kind });
       }
     }

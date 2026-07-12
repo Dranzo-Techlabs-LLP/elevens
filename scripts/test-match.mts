@@ -151,8 +151,70 @@ const out: Record<string, unknown> = {};
     }
   }
   const maxSep = Math.max(...seps);
-  const inControl = seps.filter((s) => s < 1.6).length / seps.length;
-  out.runOnto = { maxSep: +maxSep.toFixed(2), inControlPct: Math.round(inControl * 100), held: inControl > 0.85 };
+  const inBand = seps.filter((s) => s < 2.8).length / seps.length; // chase band
+  const bpEnd = m.ball.translation();
+  out.runOnto = {
+    maxSep: +maxSep.toFixed(2),
+    inBandPct: Math.round(inBand * 100),
+    ownerAtEnd: m.poss.owner === 0,
+    ballProgressM: +(bpEnd.x - -2).toFixed(1), // net downfield carry
+    held: inBand > 0.9 && bpEnd.x - -2 > 10, // stayed in the chase band, carried 10m+
+  };
+}
+
+// 9. TURN WITH BALL: jog +x with the ball, hard 90° turn — ball must stay
+{
+  const m = new Match(RAPIER, 30);
+  m.addPlayer('h1', 'T', 0, false);
+  m.restart(180);
+  const p = m.players[0];
+  p.body.setTranslation({ x: -8, y: 0.91, z: 0 }, true);
+  m.ball.setTranslation({ x: -7.4, y: 0.11, z: 0 }, true);
+  const seps: number[] = [];
+  for (let t = 0; t < 150; t++) {
+    const inp = idleFullInput();
+    if (t < 60) inp.mx = 1;            // jog +x, gain control
+    else { inp.mz = 1; }               // hard 90° turn to +z
+    m.setInput(0, inp);
+    m.step();
+    if (t > 20) {
+      const b = m.ball.translation();
+      seps.push(Math.hypot(b.x - p.pos.x, b.z - p.pos.z));
+    }
+  }
+  const turnSeps = seps.slice(40); // samples during/after the turn
+  out.turnCarry = {
+    maxSepTurn: +Math.max(...turnSeps).toFixed(2),
+    inControlPct: Math.round((turnSeps.filter((s) => s < 1.0).length / turnSeps.length) * 100),
+    owned: m.poss.owner === 0,
+  };
+}
+
+// 10. TACKLE STRIPS: carrier jogs, defender pokes — ball must leave clean
+{
+  const m = new Match(RAPIER, 30);
+  m.addPlayer('h1', 'Carrier', 0, false);
+  m.addPlayer('h2', 'Def', 1, false);
+  m.restart(180);
+  m.players[0].body.setTranslation({ x: 0, y: 0.91, z: 5 }, true);
+  m.players[1].body.setTranslation({ x: 1.1, y: 0.91, z: 5.4 }, true);
+  m.ball.setTranslation({ x: 0.4, y: 0.11, z: 5 }, true);
+  m.ball.setLinvel({ x: 0, y: 0, z: 0 }, true);
+  // carrier walks; defender stands and pokes on tick 20
+  for (let t = 0; t < 45; t++) {
+    const ic = idleFullInput(); ic.mx = 0.4;
+    const idf = idleFullInput(); idf.tackle = t === 20;
+    m.setInput(0, ic);
+    m.setInput(1, idf);
+    m.step();
+  }
+  const b = m.ball.translation();
+  const dCarrier = Math.hypot(b.x - m.players[0].pos.x, b.z - m.players[0].pos.z);
+  out.tackleStrip = {
+    distFromCarrier: +dCarrier.toFixed(2),
+    stripped: dCarrier > 1.2,
+    carrierStillOwner: m.poss.owner === 0,
+  };
 }
 
 console.log(JSON.stringify(out, null, 1));

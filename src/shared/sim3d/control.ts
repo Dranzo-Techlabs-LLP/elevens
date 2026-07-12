@@ -1,18 +1,22 @@
 // ============================================================
-// ISOMORPHIC BALL CONTROL — trap + dribble touches + shielding.
+// ISOMORPHIC BALL CONTROL — ownership + carry spring (PES close control).
 // No three.js. Runs on server and in client prediction.
 //
-// Model (no glue, ever):
-//  - TRAP: a ball arriving faster than gripSpeed gets a velocity-kill
-//    impulse when it enters your control radius. How much dies depends on
-//    what you're doing: standing composed = dead at your feet; jogging =
-//    some run-on; sprinting = it bounces 2m+ off you (heavy touch).
-//  - DRIBBLE TOUCH: a slow ball in reach gets nudged along your travel
-//    direction at touchSpeed x your speed, with deterministic aim noise
-//    that grows with sprint and fatigue. Between touches the ball is free —
-//    that separation is what makes tackles and interceptions possible.
-//  - SHIELD: caps your speed, widens reach a little; the physical capsule
-//    between opponent and ball does the actual protecting.
+// Model:
+//  - OWNERSHIP: the nearest eligible player inside collectRadius with the
+//    ball slow-relative owns it (hysteresis keeps the owner unless a
+//    challenger is clearly closer; a fresh victim of a tackle is locked out
+//    for dispossessCooldown).
+//  - CARRY: below sprint pace the owned ball is spring-tracked to a spot
+//    ahead of the feet with a CAPPED acceleration — turning carries the
+//    ball around with you. The cap means a tackle/kick impulse (which
+//    instantly puts the ball far outside what the spring can counter)
+//    breaks control naturally: that is how the ball "leaves him when
+//    kicked or tackled".
+//  - SPRINT: knock-on touches — ball punched ahead, chased, still yours
+//    inside the chase band.
+//  - TRAP: a genuinely fast INCOMING ball gets a velocity-kill first touch;
+//    quality depends on standing/moving/sprinting and stamina.
 // ============================================================
 import type RAPIER from '@dimforge/rapier3d-compat';
 import { TOUCH } from '../config3d';
@@ -22,22 +26,26 @@ export type ControlTune = { -readonly [K in keyof typeof TOUCH]: number };
 export const defaultControlTune = (): ControlTune => ({ ...TOUCH } as ControlTune);
 
 export interface ControlEvent {
-  type: 'trap' | 'touch';
+  type: 'trap' | 'touch' | 'steal';
   playerIndex: number;
-  /** relative speed at contact — anim/sfx intensity */
   intensity: number;
 }
 
-/** deterministic per-(tick,player) noise in [-1,1] — same on server & client */
+export interface ControlState {
+  cooldown: number; // seconds until this player may touch/own again
+}
+
+/** shared possession state — lives on the Match, passed in every tick */
+export interface Possession {
+  owner: number;       // player index, -1 none
+  ownerSince: number;  // tick ownership last changed
+}
+
 function noise(tick: number, salt: number): number {
   let h = (tick * 374761393 + salt * 668265263) | 0;
   h = (h ^ (h >> 13)) * 1274126177;
   h = h ^ (h >> 16);
   return ((h & 0xffff) / 0x8000) - 1;
-}
-
-export interface ControlState {
-  cooldown: number; // seconds until this player may touch again
 }
 
 export function stepBallControl(
@@ -47,99 +55,143 @@ export function stepBallControl(
   players: SimPlayer[],
   states: ControlState[],
   shielding: boolean[],
+  poss: Possession,
   tune: ControlTune = defaultControlTune(),
 ): ControlEvent[] {
   const events: ControlEvent[] = [];
   const bp = ball.translation();
   const bv = ball.linvel();
+
+  for (const s of states) s.cooldown = Math.max(0, s.cooldown - dt);
+
   if (bp.y > tune.ballMaxHeight) {
-    for (const s of states) s.cooldown = Math.max(0, s.cooldown - dt);
-    return events; // airborne: ground control impossible
+    poss.owner = -1; // airborne: nobody has close control
+    return events;
   }
 
+  const dist = (i: number) => Math.hypot(bp.x - players[i].pos.x, bp.z - players[i].pos.z);
+  const relSpeedOf = (i: number) =>
+    Math.hypot(bv.x - players[i].velX, bv.z - players[i].velZ);
+
+  // ---------- ownership resolution ----------
+  const reach = (i: number) => tune.collectRadius + (shielding[i] ? tune.shieldRadiusBonus : 0);
+  const eligible = (i: number) => states[i].cooldown <= 0;
+
+  // current owner keeps the ball while it stays playable
+  if (poss.owner >= 0) {
+    const o = poss.owner;
+    const band = players[o].speed > 6.0 ? tune.sprintChaseBand : reach(o) * 1.5;
+    if (!eligible(o) || dist(o) > band || relSpeedOf(o) > tune.carryBreakSpeed + players[o].speed) {
+      poss.owner = -1; // lost it (kicked away / tackled / outran it)
+    }
+  }
+  // nearest eligible challenger takes a free ball, or clearly beats the owner
+  let nearest = -1;
+  let nd = Infinity;
+  const ballAbs = Math.hypot(bv.x, bv.z);
+  for (let i = 0; i < players.length; i++) {
+    if (!eligible(i)) continue;
+    const d = dist(i);
+    // claimable if the BALL is slow (running onto a still ball at any pace)
+    // or the relative speed is low (moving together)
+    const claimable = ballAbs < tune.carryBreakSpeed || relSpeedOf(i) < tune.carryBreakSpeed + 2;
+    if (d < reach(i) && d < nd && claimable) {
+      nearest = i;
+      nd = d;
+    }
+  }
+  if (nearest >= 0) {
+    if (poss.owner < 0) {
+      poss.owner = nearest;
+      poss.ownerSince = tick;
+    } else if (
+      nearest !== poss.owner &&
+      nd < dist(poss.owner) * 0.6 &&
+      tick - poss.ownerSince > 8
+    ) {
+      // clean steal: previous owner is locked out briefly
+      states[poss.owner].cooldown = tune.dispossessCooldown;
+      poss.owner = nearest;
+      poss.ownerSince = tick;
+      events.push({ type: 'steal', playerIndex: nearest, intensity: 1 });
+    }
+  }
+
+  // ---------- per-player ball interaction ----------
   for (let i = 0; i < players.length; i++) {
     const pl = players[i];
     const st = states[i];
-    st.cooldown = Math.max(0, st.cooldown - dt);
     if (st.cooldown > 0) continue;
 
-    const pp = pl.pos;
-    const dx = bp.x - pp.x;
-    const dz = bp.z - pp.z;
-    const dist = Math.hypot(dx, dz);
-    const reach = tune.controlRadius + (shielding[i] ? tune.shieldRadiusBonus : 0);
-    if (dist > reach) continue;
+    const d = dist(i);
+    if (d > reach(i) && i !== poss.owner) continue;
 
     const relX = bv.x - pl.velX;
     const relZ = bv.z - pl.velZ;
     const relSpeed = Math.hypot(relX, relZ);
     const ballSpeed = Math.hypot(bv.x, bv.z);
     const plSpeed = pl.speed;
-    const sprinting = plSpeed > 6.5;
-    // closing speed: positive = the ball is coming AT me. A ball rolling
-    // along with its carrier is never "incoming", however fast we both move —
-    // that's a dribble, not a trap.
-    const closing = dist > 1e-4 ? (relX * -dx + relZ * -dz) / dist : 0;
+    const sprinting = plSpeed > 6.0;
+    const closing = d > 1e-4
+      ? (relX * (pl.pos.x - bp.x) + relZ * (pl.pos.z - bp.z)) / d
+      : 0;
 
-    // TRAP is for genuinely INCOMING balls (a pass/shot flying at you).
-    // Running onto a slow/still ball must NOT trap-tap it away — that goes
-    // to the touch/collect branches, which is what "holding the ball" is.
-    if (ballSpeed > tune.gripSpeed && relSpeed > tune.gripSpeed && closing > 2) {
-      // ---- FIRST TOUCH / TRAP ----
-      // kill a fraction of the RELATIVE velocity; what survives is the
-      // "heaviness" of the touch and runs on physically
+    // TRAP: genuinely incoming fast ball
+    if (ballSpeed > tune.gripSpeed && relSpeed > tune.gripSpeed && closing > 2 && d < reach(i)) {
       let kill = tune.trapKill;
       if (sprinting) kill = tune.trapKillSprint;
       else if (plSpeed > 1.2) kill = tune.trapKillMoving;
-      // fatigue makes every touch heavier
       kill *= 0.7 + 0.3 * pl.stamina;
       ball.setLinvel(
-        {
-          x: pl.velX + relX * (1 - kill),
-          y: Math.min(bv.y, 0.2), // kill any hop too
-          z: pl.velZ + relZ * (1 - kill),
-        },
+        { x: pl.velX + relX * (1 - kill), y: Math.min(bv.y, 0.2), z: pl.velZ + relZ * (1 - kill) },
         true,
       );
-      // spin mostly dies with the trap
       const w = ball.angvel();
       ball.setAngvel({ x: w.x * 0.25, y: w.y * 0.25, z: w.z * 0.25 }, true);
       st.cooldown = tune.trapCooldown;
+      poss.owner = i;
+      poss.ownerSince = tick;
       events.push({ type: 'trap', playerIndex: i, intensity: relSpeed });
-    } else if (plSpeed > 0.4 && dist > tune.collectRadius) {
-      // ---- DRIBBLE TOUCH ----
-      // nudge along travel direction with speed- and fatigue-scaled error
-      const baseDir = Math.atan2(pl.velZ, pl.velX);
-      const errDeg =
-        (sprinting ? tune.sprintErrorDeg : tune.touchErrorDeg) +
-        tune.tiredErrorDeg * (1 - pl.stamina);
-      const err = (noise(tick, i * 7 + 3) * errDeg * Math.PI) / 180;
-      const dir = baseDir + err;
-      const mult = sprinting ? tune.sprintTouchSpeed : tune.dribbleTouchSpeed;
-      const out = Math.max(plSpeed * mult, 1.2); // even a slow walk moves it on
-      ball.setLinvel({ x: Math.cos(dir) * out, y: bv.y, z: Math.sin(dir) * out }, true);
-      st.cooldown = sprinting ? tune.sprintTouchCooldown : tune.touchCooldown;
-      events.push({ type: 'touch', playerIndex: i, intensity: plSpeed });
+      continue;
     }
-    // ---- SOFT COLLECT (no cooldown, no glue) ----
-    // a close, slow-relative ball is EASED toward a spot ahead of the feet
-    // with a capped acceleration. Works STANDING too — receiving a pass
-    // means the ball settles AT your feet, not two meters past them. The
-    // ball still obeys physics: an opponent's poke still wins it.
-    if (dist <= tune.collectRadius && relSpeed < 7) {
+
+    if (i !== poss.owner) continue;
+
+    if (sprinting) {
+      // SPRINT KNOCK-ON: punch it ahead on a cooldown, chase onto it
+      if (d < reach(i) && st.cooldown <= 0) {
+        const baseDir = Math.atan2(pl.velZ, pl.velX);
+        const err =
+          (noise(tick, i * 7 + 3) *
+            (tune.sprintErrorDeg + tune.tiredErrorDeg * (1 - pl.stamina)) *
+            Math.PI) /
+          180;
+        const out = Math.max(plSpeed * tune.sprintTouchSpeed, 1.2);
+        ball.setLinvel(
+          { x: Math.cos(baseDir + err) * out, y: bv.y, z: Math.sin(baseDir + err) * out },
+          true,
+        );
+        st.cooldown = tune.sprintTouchCooldown;
+        events.push({ type: 'touch', playerIndex: i, intensity: plSpeed });
+      }
+    } else {
+      // CARRY SPRING (the PES close control): ball continuously tracks a
+      // point ahead of the feet — turning sweeps it around with you. The
+      // acceleration cap keeps it honest physics: tackle impulses exceed
+      // it and take the ball clean off you.
       const moving = plSpeed > 0.3;
       const dirYaw = moving ? Math.atan2(pl.velZ, pl.velX) : pl.yaw;
       const lead = moving ? tune.collectLead : tune.collectLead * 0.55;
       const tx = pl.pos.x + Math.cos(dirYaw) * lead;
       const tz = pl.pos.z + Math.sin(dirYaw) * lead;
-      const wantVX = pl.velX + (tx - bp.x) * 6;
-      const wantVZ = pl.velZ + (tz - bp.z) * 6;
+      const wantVX = pl.velX + (tx - bp.x) * 10;
+      const wantVZ = pl.velZ + (tz - bp.z) * 10;
       const dvx = wantVX - bv.x;
       const dvz = wantVZ - bv.z;
       const dvLen = Math.hypot(dvx, dvz);
       const maxDv = tune.collectAccel * dt;
-      const k2 = dvLen > maxDv ? maxDv / dvLen : 1;
-      ball.setLinvel({ x: bv.x + dvx * k2, y: bv.y, z: bv.z + dvz * k2 }, true);
+      const k = dvLen > maxDv ? maxDv / dvLen : 1;
+      ball.setLinvel({ x: bv.x + dvx * k, y: bv.y, z: bv.z + dvz * k }, true);
     }
   }
   return events;

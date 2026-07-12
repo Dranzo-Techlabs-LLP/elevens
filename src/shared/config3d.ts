@@ -94,15 +94,20 @@ export const TOUCH = {
   // dribble touches: ball velocity set to player direction * player speed *
   // touchSpeed. >1 means the ball runs ahead and you chase onto it.
   dribbleTouchSpeed: 1.10,
-  sprintTouchSpeed: 1.18, // sprinting: bigger knock-ons (but playable)
+  sprintTouchSpeed: 1.12, // sprinting: bigger knock-ons (but playable)
   touchCooldown: 0.22,    // s between contacts at jog
   sprintTouchCooldown: 0.26,
-  // soft collect: between touches, a nearby slow ball is eased toward a spot
-  // just ahead of the feet with a CAPPED acceleration — kills the shin-pong
-  // jitter without ever gluing the ball
-  collectRadius: 0.65,
-  collectAccel: 14,       // m/s^2 cap
-  collectLead: 0.38,      // m ahead of the feet
+  // CARRY (close control): while you own the ball below sprint pace it is
+  // spring-tracked to a spot ahead of your feet with a CAPPED acceleration —
+  // turns carry the ball with you (PES close control). The cap is the whole
+  // trick: an opponent's poke/tackle impulse exceeds it and rips the ball
+  // free; the spring cannot fight a real kick.
+  collectRadius: 0.75,    // within this you can gain control
+  collectAccel: 38,       // m/s^2 cap — sticky, but loses to tackles
+  collectLead: 0.35,      // m ahead of the feet
+  carryBreakSpeed: 5.5,   // rel speed above this breaks control (kick/tackle)
+  dispossessCooldown: 0.35, // s you can't re-control after being robbed
+  sprintChaseBand: 2.8,   // sprint knock-ons stay "yours" inside this
   touchErrorDeg: 4,       // aim noise per touch (deterministic rng)
   sprintErrorDeg: 9,      // sprint touches are wilder
   tiredErrorDeg: 14,      // added at zero stamina
