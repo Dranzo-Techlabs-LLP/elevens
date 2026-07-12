@@ -418,14 +418,22 @@ function netGrid(w: number, h: number, step: number) {
   const crowdC = document.createElement('canvas');
   crowdC.width = 256; crowdC.height = 64;
   const cx2 = crowdC.getContext('2d')!;
-  cx2.fillStyle = '#334155'; cx2.fillRect(0, 0, 256, 64);
-  const cols = ['#f1f5f9', '#fbbf24', '#60a5fa', '#f87171', '#4ade80', '#c084fc'];
-  for (let i = 0; i < 800; i++) { cx2.fillStyle = cols[(Math.random() * cols.length) | 0]; cx2.fillRect(Math.random() * 256, Math.random() * 64, 2, 2); }
+  // seat rows darken toward the bottom for depth
+  const rowGrad = cx2.createLinearGradient(0, 0, 0, 64);
+  rowGrad.addColorStop(0, '#3d4a5f');
+  rowGrad.addColorStop(1, '#232c3b');
+  cx2.fillStyle = rowGrad; cx2.fillRect(0, 0, 256, 64);
+  const cols = ['#f1f5f9', '#fbbf24', '#60a5fa', '#f87171', '#4ade80', '#c084fc', '#e2e8f0', '#fb923c'];
+  for (let i = 0; i < 1500; i++) {
+    cx2.fillStyle = cols[(Math.random() * cols.length) | 0];
+    const s = Math.random() < 0.5 ? 1.6 : 2.4;
+    cx2.fillRect(Math.random() * 256, Math.random() * 64, s, s);
+  }
   const crowdTex = new THREE.CanvasTexture(crowdC);
   crowdTex.wrapS = crowdTex.wrapT = THREE.RepeatWrapping;
-  const stand = (w2: number, withRoof: boolean) => {
+  const stand = (w2: number, withRoof: boolean, tiersOverride?: number) => {
     const g = new THREE.Group();
-    const tiers = withRoof ? 4 : 3; // open low terraces at the ends
+    const tiers = tiersOverride ?? (withRoof ? 5 : 4);
     for (let t = 0; t < tiers; t++) {
       const m = new THREE.MeshLambertMaterial({ map: crowdTex.clone() });
       m.map!.repeat.set(Math.round(w2 / 6), 1);
@@ -436,27 +444,70 @@ function netGrid(w: number, h: number, step: number) {
     }
     const wallMat = new THREE.MeshLambertMaterial({ color: 0x3f4a5a });
     if (withRoof) {
-      const back = new THREE.Mesh(new THREE.BoxGeometry(w2, 5.6, 0.3), wallMat);
-      back.position.set(0, 2.8, -4.9);
+      const back = new THREE.Mesh(new THREE.BoxGeometry(w2, 6.8, 0.3), wallMat);
+      back.position.set(0, 3.4, -6.2);
       g.add(back);
       // roof only on the far grandstand — end roofs occluded the corners
       const roof = new THREE.Mesh(
-        new THREE.BoxGeometry(w2, 0.22, 6.6),
-        new THREE.MeshLambertMaterial({ color: 0x2b3442 }),
+        new THREE.BoxGeometry(w2, 0.22, 5.2),
+        new THREE.MeshLambertMaterial({ color: 0x3a4658 }),
       );
-      roof.position.set(0, 5.75, -2.4);
+      roof.position.set(0, 6.95, -4.0);
       g.add(roof);
+      // lit underside so the bowl doesn't read as a black maw
+      const under = new THREE.Mesh(
+        new THREE.PlaneGeometry(w2, 5.2),
+        new THREE.MeshBasicMaterial({ color: 0x2f3a4d }),
+      );
+      under.rotation.x = Math.PI / 2;
+      under.position.set(0, 6.82, -4.0);
+      g.add(under);
       for (let px2 = -w2 / 2 + 2; px2 <= w2 / 2 - 2; px2 += Math.max(6, w2 / 6)) {
-        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 5.6, 6), wallMat);
-        post.position.set(px2, 2.8, 0.4);
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 6.8, 6), wallMat);
+        post.position.set(px2, 3.4, 0.6);
         g.add(post);
+      }
+      // roof flag row
+      for (let fx2 = -w2 / 2 + 4; fx2 <= w2 / 2 - 4; fx2 += Math.max(8, w2 / 5)) {
+        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.4, 5), wallMat);
+        pole.position.set(fx2, 7.7, -3.0);
+        const flag = new THREE.Mesh(
+          new THREE.PlaneGeometry(0.7, 0.4),
+          new THREE.MeshLambertMaterial({ color: [0x15803d, 0xd97706, 0x3b82f6][(Math.abs(fx2) | 0) % 3], side: THREE.DoubleSide }),
+        );
+        flag.position.set(fx2 + 0.36, 8.15, -3.0);
+        g.add(pole, flag);
       }
     }
     return g;
   };
+  // full bowl: covered main stand, open ends, angled corner blocks
   const s1 = stand(L + 8, true); s1.position.set(0, 0, -W / 2 - 2.4); s1.rotation.y = Math.PI; scene.add(s1);
   const s3 = stand(W + 2, false); s3.position.set(-L / 2 - 3.6, 0, 0); s3.rotation.y = -Math.PI / 2; scene.add(s3);
   const s4 = stand(W + 2, false); s4.position.set(L / 2 + 3.6, 0, 0); s4.rotation.y = Math.PI / 2; scene.add(s4);
+  for (const [cx4, cz4, ry] of [
+    [-L / 2 - 2.6, -W / 2 - 1.8, -Math.PI * 0.75],
+    [L / 2 + 2.6, -W / 2 - 1.8, Math.PI * 0.75],
+  ] as const) {
+    const c = stand(9, false, 4);
+    c.position.set(cx4, 0, cz4);
+    c.rotation.y = ry + Math.PI; // face the pitch
+    scene.add(c);
+  }
+  // dugouts on the near touchline (broadcast side)
+  for (const dx2 of [-6, 6]) {
+    const shel = new THREE.Group();
+    const mat = new THREE.MeshStandardMaterial({ color: 0x1c2740, roughness: 0.35, metalness: 0.2 });
+    const backW = new THREE.Mesh(new THREE.BoxGeometry(4.4, 1.5, 0.12), mat);
+    backW.position.set(0, 0.75, 0.55);
+    const roofP = new THREE.Mesh(new THREE.BoxGeometry(4.4, 0.1, 1.5), new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.25, metalness: 0.4, transparent: true, opacity: 0.9 }));
+    roofP.position.set(0, 1.55, 0);
+    const bench = new THREE.Mesh(new THREE.BoxGeometry(4.0, 0.12, 0.45), new THREE.MeshLambertMaterial({ color: 0x475569 }));
+    bench.position.set(0, 0.5, 0.28);
+    shel.add(backW, roofP, bench);
+    shel.position.set(dx2, 0, W / 2 + 1.3);
+    scene.add(shel);
+  }
   // floodlights
   for (const [fx, fz] of [[-L / 2 - 4, -W / 2 - 4], [L / 2 + 4, -W / 2 - 4], [-L / 2 - 4, W / 2 + 4], [L / 2 + 4, W / 2 + 4]]) {
     const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.12, 12, 8), new THREE.MeshLambertMaterial({ color: 0x475569 }));

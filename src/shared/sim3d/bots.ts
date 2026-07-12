@@ -38,11 +38,13 @@ export function botThink(match: Match, i: number): PlayerFullInput {
   const P = (idx: number) => match.players[idx];
   const distBall = (idx: number) => Math.hypot(bp.x - P(idx).pos.x, bp.z - P(idx).pos.z);
 
-  // possession read
+  // possession read — from the REAL possession state, not guesswork
   const myDist = distBall(i);
-  const iHaveIt = myDist < 1.0;
-  const oppHasIt = match.lastTouch >= 0 && match.meta[match.lastTouch]?.team !== meta.team && Math.min(...opps.map((o) => distBall(o.idx))) < 1.2;
-  const weHaveIt = match.lastTouch >= 0 && match.meta[match.lastTouch]?.team === meta.team && !oppHasIt;
+  const ownerIdx = match.poss.owner;
+  const iHaveIt = ownerIdx === i;
+  const ballLoose = ownerIdx < 0;
+  const oppHasIt = ownerIdx >= 0 && match.meta[ownerIdx].team !== meta.team;
+  const weHaveIt = ownerIdx >= 0 && match.meta[ownerIdx].team === meta.team;
 
   // roles
   let keeperIdx = -1, deep = Infinity;
@@ -64,17 +66,32 @@ export function botThink(match: Match, i: number): PlayerFullInput {
     if (a > adv) { adv = a; runnerIdx = e.idx; }
   }
 
-  const seek = (tx: number, tz: number, opts: { sprint?: boolean; stopAt?: number } = {}) => {
+  const seek = (tx: number, tz: number, opts: { sprint?: boolean; stopAt?: number; mag?: number } = {}) => {
     tx = Math.max(-L / 2 + 0.6, Math.min(L / 2 - 0.6, tx));
     tz = Math.max(-W / 2 + 0.6, Math.min(W / 2 - 0.6, tz));
     const dx = tx - me.pos.x;
     const dz = tz - me.pos.z;
     const d = Math.hypot(dx, dz);
     if (d > (opts.stopAt ?? 0.6)) {
-      inp.mx = dx / d;
-      inp.mz = dz / d;
+      const mag = opts.mag ?? 1;
+      inp.mx = (dx / d) * mag;
+      inp.mz = (dz / d) * mag;
       inp.sprint = !!opts.sprint && d > 3;
     }
+  };
+
+  // COLLECT APPROACH: sprinting flat-out INTO a loose ball fails the claim
+  // gate (relative speed too high) — the bot blows straight past it. Real
+  // players decelerate into the ball; do the same: sprint far out, ease off
+  // inside 3m, arrive slow enough to take possession.
+  const collectBall = () => {
+    const d = distBall(i);
+    const lead = d > 3 ? 0.18 : 0.04;
+    seek(bp.x + bv.x * lead, bp.z + bv.z * lead, {
+      sprint: d > 4,
+      stopAt: 0.12,
+      mag: d > 3 ? 1 : 0.5,
+    });
   };
 
   // an open teammate: ahead of me toward goal, lane clear of opponents
@@ -105,11 +122,21 @@ export function botThink(match: Match, i: number): PlayerFullInput {
       return inp;
     }
 
-    // shoot when in range with a look at goal
-    if (dGoal < L * 0.32 && laneClear(attackX, 0)) {
-      seek(attackX, 0, { stopAt: 0.3 });
-      inp.shoot = match.actStates[i].shootHeldMs < 320;
-      return inp;
+    // shoot when in range — a keeper on his line is NOT a reason to hold
+    // back (placement aims past him); only an opponent physically in your
+    // face blocks the strike
+    if (dGoal < L * 0.32) {
+      let blocked = false;
+      for (const o of opps) {
+        const op = P(o.idx).pos;
+        const toward = Math.sign(attackX) * (op.x - me.pos.x);
+        if (toward > 0 && toward < 1.6 && Math.abs(op.z - me.pos.z) < 0.9) blocked = true;
+      }
+      if (!blocked) {
+        seek(attackX, 0, { stopAt: 0.3 });
+        inp.shoot = match.actStates[i].shootHeldMs < 320;
+        return inp;
+      }
     }
     // through ball for the runner when he's ahead of me and open
     if (runnerIdx >= 0) {
@@ -120,31 +147,58 @@ export function botThink(match: Match, i: number): PlayerFullInput {
         return inp;
       }
     }
-    // pass to an open mate that's not behind me, prefer under pressure
-    if (pressure < 2.5 || match.tick % 30 < 2) {
-      let bestMate = -1, bestScore = Infinity;
-      for (const e of mates) {
-        if (e.idx === i || e.idx === keeperIdx) continue;
-        const mp = P(e.idx).pos;
-        const behind = Math.sign(attackX) * (mp.x - me.pos.x) < -3;
-        if (behind || !laneClear(mp.x, mp.z)) continue;
-        const d = Math.hypot(mp.x - me.pos.x, mp.z - me.pos.z);
-        if (d < 3 || d > 16) continue;
-        const score = d + (Math.sign(attackX) * (me.pos.x - mp.x)) * 2; // prefer forward
-        if (score < bestScore) { bestScore = score; bestMate = e.idx; }
+    // PASS DECISION: score every teammate — forward progress, lane safety,
+    // useful distance. Pass under pressure, and proactively every ~0.8s if
+    // someone is in a clearly better position.
+    let bestMate = -1, bestGain = -Infinity;
+    for (const e of mates) {
+      if (e.idx === i || e.idx === keeperIdx) continue;
+      const mp = P(e.idx).pos;
+      const d = Math.hypot(mp.x - me.pos.x, mp.z - me.pos.z);
+      if (d < 2.5 || d > 17) continue;
+      if (!laneClear(mp.x, mp.z)) continue;
+      const forwardGain = Math.sign(attackX) * (mp.x - me.pos.x); // meters toward goal
+      // open-ness: nearest opponent to the receiving spot
+      let open = 99;
+      for (const o of opps) {
+        open = Math.min(open, Math.hypot(P(o.idx).pos.x - mp.x, P(o.idx).pos.z - mp.z));
       }
-      if (bestMate >= 0) {
-        // step toward the target (movement sets facing), release the pass
-        const mp = P(bestMate).pos;
-        seek(mp.x, mp.z, { stopAt: 0.5 });
-        pulse(inp, 'pass', match.tick);
-        return inp;
-      }
+      const gain = forwardGain * 1.5 + Math.min(open, 5) - d * 0.25;
+      if (gain > bestGain) { bestGain = gain; bestMate = e.idx; }
+    }
+    const shouldPass =
+      bestMate >= 0 && (pressure < 2.2 ? bestGain > -2 : bestGain > 2.5 && match.tick % 24 < 2);
+    if (shouldPass) {
+      const mp = P(bestMate).pos;
+      seek(mp.x, mp.z, { stopAt: 0.5, mag: 0.6 }); // face the target
+      pulse(inp, 'pass', match.tick);
+      return inp;
     }
     // carry: sprint only into space
     const spaceAhead = pressure > 3.5;
     seek(attackX, me.pos.z * 0.6, { sprint: spaceAhead, stopAt: 0.3 });
     return inp;
+  }
+
+  // ================= LOOSE BALL =================
+  // a free ball near me is MINE to win — closest teammate goes, not just
+  // the designated chaser watching from his zone
+  if (ballLoose) {
+    let closest = -1, cd = Infinity;
+    for (const e of mates) {
+      if (e.idx === keeperIdx) continue;
+      const d = distBall(e.idx);
+      if (d < cd) { cd = d; closest = e.idx; }
+    }
+    const inMyBox = Math.abs(bp.x - defendX) < 7 && Math.abs(bp.z) < 6;
+    if (i === closest && cd < 14) {
+      collectBall();
+      return inp;
+    }
+    if (i === keeperIdx && inMyBox) {
+      collectBall();
+      return inp;
+    }
   }
 
   if (i === keeperIdx) {
@@ -158,12 +212,11 @@ export function botThink(match: Match, i: number): PlayerFullInput {
 
   if (i === chaserIdx) {
     // ================= CHASER =================
-    // press the ball (lead it); everyone else stays home
-    seek(bp.x + bv.x * 0.18, bp.z + bv.z * 0.18, { sprint: distBall(i) > 4, stopAt: 0.2 });
+    collectBall(); // decelerating approach — can actually claim it
     // tackle: only when the ball is genuinely on MY side of the carrier
     // (PES shielding), and not more than once every ~1.2s — no poke spam
     if (oppHasIt && myDist < 1.3 && match.tick >= match.actStates[i].stunUntilTick) {
-      const carrier = match.lastTouch >= 0 ? match.players[match.lastTouch] : null;
+      const carrier = ownerIdx >= 0 ? match.players[ownerIdx] : null;
       const dCarrier = carrier
         ? Math.hypot(carrier.pos.x - me.pos.x, carrier.pos.z - me.pos.z)
         : 99;
@@ -171,6 +224,20 @@ export function botThink(match: Match, i: number): PlayerFullInput {
       if (ballOnMySide) pulse(inp, 'tackle', match.tick, 36); // ~1.2s between pokes
     }
     return inp;
+  }
+
+  // second presser when the opponent carries in OUR defensive third
+  if (oppHasIt && Math.sign(attackX) * (bp.x - defendX) < L * 0.3) {
+    let second = -1, sd = Infinity;
+    for (const e of mates) {
+      if (e.idx === keeperIdx || e.idx === chaserIdx) continue;
+      const d = distBall(e.idx);
+      if (d < sd) { sd = d; second = e.idx; }
+    }
+    if (i === second && sd < 9) {
+      collectBall();
+      return inp;
+    }
   }
 
   // ================= RUNNER / HOLDERS =================
