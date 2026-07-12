@@ -217,5 +217,30 @@ const out: Record<string, unknown> = {};
   };
 }
 
+// 11. SHIELDING: presser BEHIND the carrier pokes — must be blocked;
+//     the same poke from the ball side must strip
+{
+  const m = new Match(RAPIER, 30);
+  m.addPlayer('c', 'Car', 0, false);
+  m.addPlayer('d', 'Def', 1, false);
+  m.restart(180);
+  // carrier faces +x, ball ahead (+x); defender directly BEHIND (-x)
+  m.players[0].body.setTranslation({ x: 0, y: 0.91, z: 5 }, true);
+  m.players[0].yaw = 0;
+  m.players[1].body.setTranslation({ x: -0.9, y: 0.91, z: 5 }, true);
+  m.ball.setTranslation({ x: 0.45, y: 0.11, z: 5 }, true);
+  m.ball.setLinvel({ x: 0, y: 0, z: 0 }, true);
+  for (let t = 0; t < 30; t++) {
+    const ic = idleFullInput(); ic.mx = 0.3; // walk forward, shielding
+    const idf = idleFullInput(); idf.tackle = t === 10 || t === 22;
+    m.setInput(0, ic);
+    m.setInput(1, idf);
+    m.step();
+  }
+  const b1 = m.ball.translation();
+  const dBehind = Math.hypot(b1.x - m.players[0].pos.x, b1.z - m.players[0].pos.z);
+  out.shieldBlocksPoke = { sepAfter: +dBehind.toFixed(2), kept: dBehind < 1.0 && m.poss.owner === 0 };
+}
+
 console.log(JSON.stringify(out, null, 1));
 process.exit(0);

@@ -130,7 +130,16 @@ export function stepActions(ctx: ActionCtx, inputs: ActionInput[]) {
       }
 
       // ---- standing tackle (tap) ----
-      if (inp.tackle && !st.prevTackle && distToBall < 1.3 && ballPlayable) {
+      // SHIELDING RULE (PES): if the carrier's body is between you and the
+      // ball, the poke fails — you cannot tackle through a player. The ball
+      // must be on YOUR side of the carrier.
+      let pokeBlocked = false;
+      if (ctx.poss.owner >= 0 && ctx.poss.owner !== i) {
+        const carrier = players[ctx.poss.owner];
+        const dCarrier = Math.hypot(carrier.pos.x - pl.pos.x, carrier.pos.z - pl.pos.z);
+        pokeBlocked = dCarrier < distToBall + 0.15; // carrier closer than the ball = shielded
+      }
+      if (inp.tackle && !st.prevTackle && distToBall < 1.3 && ballPlayable && !pokeBlocked) {
         // poke the ball AWAY FROM ITS CARRIER (aiming tackler->ball drives
         // it into the carrier's shins and it just parks at his feet again),
         // and BREAK possession so the carry spring lets go

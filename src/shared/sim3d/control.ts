@@ -175,6 +175,21 @@ export function stepBallControl(
         );
         st.cooldown = tune.sprintTouchCooldown;
         events.push({ type: 'touch', playerIndex: i, intensity: plSpeed });
+      } else if (d < tune.sprintChaseBand) {
+        // SPRINT CARRY ASSIST: between knock-ons the ball gets a weak steer
+        // toward your CURRENT heading line — sprint-turning bends the ball
+        // with your arc instead of it flying straight off your run
+        const dirYaw = Math.atan2(pl.velZ, pl.velX);
+        const tx = pl.pos.x + Math.cos(dirYaw) * Math.min(d, 1.2);
+        const tz = pl.pos.z + Math.sin(dirYaw) * Math.min(d, 1.2);
+        const wantVX = pl.velX + (tx - bp.x) * 4;
+        const wantVZ = pl.velZ + (tz - bp.z) * 4;
+        const dvx = wantVX - bv.x;
+        const dvz = wantVZ - bv.z;
+        const dvLen = Math.hypot(dvx, dvz);
+        const maxDv = 10 * dt; // weak — a defender's body still wins the race
+        const k2 = dvLen > maxDv ? maxDv / dvLen : 1;
+        ball.setLinvel({ x: bv.x + dvx * k2, y: bv.y, z: bv.z + dvz * k2 }, true);
       }
     } else {
       // CARRY SPRING (the PES close control): ball continuously tracks a

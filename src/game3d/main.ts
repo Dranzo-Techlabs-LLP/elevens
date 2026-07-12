@@ -247,7 +247,7 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 const quality: 'high' | 'low' = new URLSearchParams(location.search).get('q') as any || (isTouch ? 'low' : 'high');
 renderer.setPixelRatio(quality === 'low' ? 1 : Math.min(devicePixelRatio || 1, 1.75));
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.1;
+renderer.toneMappingExposure = 1.22;
 renderer.shadowMap.enabled = quality === 'high';
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
@@ -275,11 +275,11 @@ scene.fog = new THREE.Fog(0x9fd4f5, 80, 240);
   dome.position.y = -6;
   scene.add(dome);
 }
-const camera = new THREE.PerspectiveCamera(55, 1, 0.05, 400);
+const camera = new THREE.PerspectiveCamera(42, 1, 0.05, 400); // tighter = TV lens
 
-scene.add(new THREE.HemisphereLight(0xe8f4ff, 0x2f6b38, 0.95));
-const sun = new THREE.DirectionalLight(0xfff2d8, 1.5);
-sun.position.set(-14, 26, 12);
+scene.add(new THREE.HemisphereLight(0xcfe4ff, 0x2e7a3b, 0.85));
+const sun = new THREE.DirectionalLight(0xffe6bd, 1.85); // late-afternoon warmth
+sun.position.set(-16, 19, 11);
 sun.castShadow = quality === 'high';
 sun.shadow.mapSize.set(2048, 2048);
 Object.assign(sun.shadow.camera, { left: -28, right: 28, top: 24, bottom: -24, near: 4, far: 80 });
@@ -291,9 +291,9 @@ scene.add(sun);
   texC.width = 2048; texC.height = 1024;
   const tx = texC.getContext('2d')!;
   const PX = 2048 / L; // px per meter
-  tx.fillStyle = '#2f9e44'; tx.fillRect(0, 0, 2048, 1024);
-  // mow stripes, subtle two-tone
-  tx.fillStyle = 'rgba(255,255,255,0.055)';
+  tx.fillStyle = '#2c9740'; tx.fillRect(0, 0, 2048, 1024); // richer base green
+  // mow stripes, PES-contrast two-tone
+  tx.fillStyle = 'rgba(190,255,190,0.10)';
   for (let i = 0; i < 10; i += 2) tx.fillRect(i * 204.8, 0, 204.8, 1024);
   // grass noise
   for (let i = 0; i < 9000; i++) {
@@ -833,11 +833,12 @@ function frame() {
     const bx = view.ball.x + view.ball.vx * 0.25;
     const bz = view.ball.z + view.ball.vz * 0.25;
     if (camMode === 0) {
-      const fx = Math.max(-L / 2 + 6, Math.min(L / 2 - 6, bx * 0.7 + mx * 0.3));
-      const fz = Math.max(-2, Math.min(W / 2, bz * 0.7 + mz * 0.3));
+      // PES-style TV broadcast: lower, farther, tighter lens, ball-led pan
+      const fx = Math.max(-L / 2 + 7, Math.min(L / 2 - 7, bx * 0.72 + mx * 0.28));
+      const fz = Math.max(-2, Math.min(W / 2, bz * 0.6 + mz * 0.4));
       camTarget.lerp(new THREE.Vector3(fx, 0, fz), 1 - Math.exp(-4 * dtReal));
-      camera.position.set(camTarget.x, 13, camTarget.z + 13.5);
-      camera.lookAt(camTarget.x, 0.4, camTarget.z - 1.5);
+      camera.position.set(camTarget.x, 10.5, camTarget.z + 17.5);
+      camera.lookAt(camTarget.x, 0.2, camTarget.z - 2.2);
     } else if (camMode === 1) {
       const fx = Math.cos(camYaw), fz = Math.sin(camYaw);
       // smoothed chase — hard-setting the position transmits every sim step

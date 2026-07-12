@@ -160,8 +160,15 @@ export function botThink(match: Match, i: number): PlayerFullInput {
     // ================= CHASER =================
     // press the ball (lead it); everyone else stays home
     seek(bp.x + bv.x * 0.18, bp.z + bv.z * 0.18, { sprint: distBall(i) > 4, stopAt: 0.2 });
-    if (oppHasIt && myDist < 1.5 && match.tick >= match.actStates[i].stunUntilTick) {
-      pulse(inp, 'tackle', match.tick);
+    // tackle: only when the ball is genuinely on MY side of the carrier
+    // (PES shielding), and not more than once every ~1.2s — no poke spam
+    if (oppHasIt && myDist < 1.3 && match.tick >= match.actStates[i].stunUntilTick) {
+      const carrier = match.lastTouch >= 0 ? match.players[match.lastTouch] : null;
+      const dCarrier = carrier
+        ? Math.hypot(carrier.pos.x - me.pos.x, carrier.pos.z - me.pos.z)
+        : 99;
+      const ballOnMySide = myDist < dCarrier - 0.1;
+      if (ballOnMySide) pulse(inp, 'tackle', match.tick, 36); // ~1.2s between pokes
     }
     return inp;
   }
@@ -188,7 +195,12 @@ export function botThink(match: Match, i: number): PlayerFullInput {
   return inp;
 }
 
-/** rising-edge helper: press for 1 tick in every 12 so edges re-fire */
-function pulse(inp: PlayerFullInput, key: 'pass' | 'lob' | 'tackle' | 'through', tick: number) {
-  (inp as any)[key] = tick % 12 < 1;
+/** rising-edge helper: press for 1 tick in every `period` so edges re-fire */
+function pulse(
+  inp: PlayerFullInput,
+  key: 'pass' | 'lob' | 'tackle' | 'through',
+  tick: number,
+  period = 12,
+) {
+  (inp as any)[key] = tick % period < 1;
 }

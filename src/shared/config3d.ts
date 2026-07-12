@@ -94,9 +94,9 @@ export const TOUCH = {
   // dribble touches: ball velocity set to player direction * player speed *
   // touchSpeed. >1 means the ball runs ahead and you chase onto it.
   dribbleTouchSpeed: 1.10,
-  sprintTouchSpeed: 1.12, // sprinting: bigger knock-ons (but playable)
+  sprintTouchSpeed: 1.07, // sprinting: bigger knock-ons (but playable)
   touchCooldown: 0.22,    // s between contacts at jog
-  sprintTouchCooldown: 0.26,
+  sprintTouchCooldown: 0.22,
   // CARRY (close control): while you own the ball below sprint pace it is
   // spring-tracked to a spot ahead of your feet with a CAPPED acceleration —
   // turns carry the ball with you (PES close control). The cap is the whole
