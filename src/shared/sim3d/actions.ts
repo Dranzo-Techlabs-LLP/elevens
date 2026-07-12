@@ -67,7 +67,7 @@ export const newActionState = (): ActionState => ({
 });
 
 export interface MatchEvent {
-  kind: 'kick' | 'foul' | 'tackle' | 'slide';
+  kind: 'kick' | 'foul' | 'tackle' | 'slide' | 'save';
   playerIndex: number;
   detail?: string;
 }
@@ -90,6 +90,12 @@ export interface ActionCtx {
   /** possession — tackles/kicks break it so the carry spring lets go */
   poss: Possession;
   ctlStates: ControlState[];
+  /** dead-ball gate: during a restart ceremony only the taker (and only
+   *  once the ceremony ends) may play the ball. Undefined = open play. */
+  canPlay?: (i: number) => boolean;
+  /** index of a keeper holding the ball in his hands (-1 none): he cannot
+   *  be tackled — the laws protect a keeper in control with his hands */
+  holdIdx?: number;
 }
 
 export function stepActions(ctx: ActionCtx, inputs: ActionInput[]) {
@@ -108,8 +114,10 @@ export function stepActions(ctx: ActionCtx, inputs: ActionInput[]) {
     const distToBall = Math.hypot(dx, dz);
     const ballPlayable = bp.y < TOUCH.ballMaxHeight + 0.4;
 
+    const mayPlay = ctx.canPlay ? ctx.canPlay(i) : true;
+
     // ---- charge / trigger edges (ignored while stunned/sliding) ----
-    if (!stunned && tick >= st.slideUntilTick) {
+    if (!stunned && tick >= st.slideUntilTick && mayPlay) {
       if (inp.shoot) st.shootHeldMs += dt * 1000;
       const fire = (kind: 'pass' | 'through' | 'shoot' | 'lob', charge = 0) => {
         if (tick < st.kickCooldownUntil || st.pending) return;
@@ -138,6 +146,8 @@ export function stepActions(ctx: ActionCtx, inputs: ActionInput[]) {
         const carrier = players[ctx.poss.owner];
         const dCarrier = Math.hypot(carrier.pos.x - pl.pos.x, carrier.pos.z - pl.pos.z);
         pokeBlocked = dCarrier < distToBall + 0.15; // carrier closer than the ball = shielded
+        // a keeper holding the ball in his hands cannot be challenged at all
+        if (ctx.holdIdx === ctx.poss.owner) pokeBlocked = true;
       }
       if (inp.tackle && !st.prevTackle && distToBall < 1.3 && ballPlayable && !pokeBlocked) {
         // poke the ball AWAY FROM ITS CARRIER (aiming tackler->ball drives
@@ -195,7 +205,9 @@ export function stepActions(ctx: ActionCtx, inputs: ActionInput[]) {
         const dCarrier = Math.hypot(carrier.pos.x - pl.pos.x, carrier.pos.z - pl.pos.z);
         throughBody = dCarrier < distToBall - 0.05;
       }
-      if (distToBall < 1.35 && ballPlayable && !throughBody) {
+      // the ball in a keeper's hands is out of reach for a slide too
+      const heldByKeeper = ctx.holdIdx !== undefined && ctx.holdIdx >= 0 && ctx.holdIdx === ctx.poss.owner && ctx.holdIdx !== i;
+      if (distToBall < 1.35 && ballPlayable && !throughBody && !heldByKeeper) {
         // won it: ball knocked on in slide direction, carrier dispossessed
         ball.setLinvel(
           { x: st.slideDirX * 7, y: 0.8, z: st.slideDirZ * 7 },

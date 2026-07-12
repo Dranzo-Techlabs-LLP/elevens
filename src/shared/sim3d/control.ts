@@ -58,6 +58,9 @@ export function stepBallControl(
   poss: Possession,
   tune: ControlTune = defaultControlTune(),
   isBot: boolean[] = [],
+  // dead-ball lock: while a restart ceremony (or a keeper's hand-hold) is
+  // active, ONLY this player may claim or touch the ball (-1 = open play)
+  lockedTo = -1,
 ): ControlEvent[] {
   const events: ControlEvent[] = [];
   const bp = ball.translation();
@@ -66,7 +69,9 @@ export function stepBallControl(
   for (const s of states) s.cooldown = Math.max(0, s.cooldown - dt);
 
   if (bp.y > tune.ballMaxHeight) {
-    poss.owner = -1; // airborne: nobody has close control
+    // airborne: nobody has close control — EXCEPT a keeper holding the
+    // ball in his hands at chest height (the match glues it there)
+    if (lockedTo < 0) poss.owner = -1;
     return events;
   }
 
@@ -76,7 +81,8 @@ export function stepBallControl(
 
   // ---------- ownership resolution ----------
   const reach = (i: number) => tune.collectRadius + (shielding[i] ? tune.shieldRadiusBonus : 0);
-  const eligible = (i: number) => states[i].cooldown <= 0;
+  const eligible = (i: number) =>
+    states[i].cooldown <= 0 && (lockedTo < 0 || i === lockedTo);
 
   // current owner keeps the ball while it stays playable
   if (poss.owner >= 0) {
@@ -124,6 +130,7 @@ export function stepBallControl(
     const pl = players[i];
     const st = states[i];
     if (st.cooldown > 0) continue;
+    if (lockedTo >= 0 && i !== lockedTo) continue; // dead ball: hands off
 
     const d = dist(i);
     if (d > reach(i) && i !== poss.owner) continue;

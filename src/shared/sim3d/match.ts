@@ -33,6 +33,9 @@ export interface MatchPlayerMeta {
   name: string;
   team: 0 | 1;
   bot: boolean;
+  /** the designated goalkeeper of his team (spot 0) — may use hands in his
+   *  own penalty area and takes the goal kicks */
+  keeper?: boolean;
 }
 
 export interface MatchSnapshot {
@@ -55,12 +58,33 @@ export interface MatchSnapshot {
     stunned: boolean;
     sliding: boolean;
     shielding: boolean;
+    holding: boolean;
   }[];
   events: MatchEvent[];
 }
 
 const L = PITCH_5S.length;
 const W = PITCH_5S.width;
+
+// Box geometry shared with the pitch markings (proportions of a 105x68
+// pitch scaled to ours) — the sim's penalty/goal-kick/keeper-hands rules
+// must agree with the painted lines.
+export const BOX = {
+  penDepth: (16.5 / 105) * L,  // penalty area depth  (~6.29m)
+  penWidth: (40.3 / 68) * W,   // penalty area width  (~11.85m)
+  sixDepth: (5.5 / 105) * L,   // goal area depth     (~2.10m)
+  spotDist: (11 / 105) * L,    // penalty spot        (~4.19m)
+};
+
+export type RestartKind = 'throwin' | 'goalkick' | 'corner' | 'freekick' | 'penalty';
+export interface RestartState {
+  kind: RestartKind;
+  team: 0 | 1;     // team awarded the restart
+  taker: number;   // player index who takes it
+  x: number;
+  z: number;
+  readyTick: number; // ceremony ends; taker may play the ball
+}
 
 export class Match {
   world: RAPIER.World;
@@ -86,6 +110,15 @@ export class Match {
   kickoffTeam: 0 | 1 = 0;
   kickoffHold = false;
 
+  // ---- dead-ball restarts (throw-in / corner / goal kick / free kick /
+  // penalty): ball is placed, a taker steps up, opponents retreat, and
+  // until the taker's first touch nobody else may play it ----
+  restartState: RestartState | null = null;
+
+  // ---- goalkeeper hands: index of a keeper holding the ball (-1 none) ----
+  holdIdx = -1;
+  private holdSince = 0;
+
   // ---- referee ----
   ref = { x: 0, z: 6, vx: 0, vz: 0, yaw: Math.PI };
   private yellows = new Map<number, number>(); // playerIndex -> yellow count
@@ -104,14 +137,14 @@ export class Match {
       R.ColliderDesc.cuboid(80, 0.5, 60).setTranslation(0, -0.5, 0).setFriction(0.8),
       g,
     );
-    // arena boards (MVP: futsal-style rebound walls keep play flowing;
-    // out-of-bounds restarts are a config flip away)
+    // REAL FOOTBALL BOUNDARIES: no boards. The ball crossing a line is out
+    // of play and restarts per the laws (throw-in / corner / goal kick).
+    // Only the goal frame, a net-back stop, and the player-only mouth seals
+    // remain physical.
     const wall = (x: number, z: number, hx: number, hz: number) => {
       const b = this.world.createRigidBody(R.RigidBodyDesc.fixed().setTranslation(x, 1, z));
       this.world.createCollider(R.ColliderDesc.cuboid(hx, 1, hz).setRestitution(0.55), b);
     };
-    wall(0, -W / 2 - 0.15, L / 2 + 1, 0.15);
-    wall(0, W / 2 + 0.15, L / 2 + 1, 0.15);
     // PLAYER-ONLY seals across the goal mouths (group 0x8): the ball sails
     // through into the net, players cannot — physical backup to the
     // position clamp in SimPlayer
@@ -124,13 +157,9 @@ export class Match {
         b,
       );
     }
-    // end walls have goal gaps
     const gapZ = PITCH_5S.goalWidth / 2;
-    const endSeg = (W / 2 - gapZ) / 2 + gapZ;
     for (const sx of [-1, 1]) {
-      wall(sx * (L / 2 + 0.15), -(gapZ + (W / 2 - gapZ) / 2), 0.15, (W / 2 - gapZ) / 2);
-      wall(sx * (L / 2 + 0.15), gapZ + (W / 2 - gapZ) / 2, 0.15, (W / 2 - gapZ) / 2);
-      // net-back stops the ball behind the goal line
+      // net-back stops the ball behind the goal line (a goal stays a goal)
       wall(sx * (L / 2 + PITCH_5S.goalDepth + 0.2), 0, 0.15, gapZ + 0.3);
       // crossbar
       const bar = this.world.createRigidBody(
@@ -171,11 +200,27 @@ export class Match {
     const idx = this.players.length;
     this.meta.push({ id, name, team, bot });
     const spot = this.spotFor(idx);
+    this.meta[idx].keeper = spot.nth === 0; // spot 0 = the goalkeeper
     this.players.push(new SimPlayer(this.R, this.world, spot.x, spot.z));
     this.ctlStates.push({ cooldown: 0 });
     this.actStates.push(newActionState());
     this.inputs.push(idleFullInput());
     return idx;
+  }
+
+  /** the designated keeper of a team (falls back to the deepest player) */
+  keeperOf(team: 0 | 1): number {
+    for (let i = 0; i < this.meta.length; i++) {
+      if (this.meta[i].team === team && this.meta[i].keeper) return i;
+    }
+    let best = -1, deep = -Infinity;
+    const own = team === 0 ? -1 : 1;
+    for (let i = 0; i < this.meta.length; i++) {
+      if (this.meta[i].team !== team) continue;
+      const d = own * this.players[i].pos.x;
+      if (d > deep) { deep = d; best = i; }
+    }
+    return best;
   }
 
   /** Humans fill from the STRIKER backward (fun roles first); bots fill from
@@ -201,12 +246,15 @@ export class Match {
       nth = Math.max(0, spots.length - 1 - humansBefore); // humans: striker first
     }
     const s = spots[nth];
-    return { x: sx * s.x, z: s.z };
+    return { x: sx * s.x, z: s.z, nth };
   }
 
   kickoff() {
     this.kickoffHold = true;
-    this.poss = { owner: -1, ownerSince: 0 };
+    this.restartState = null;
+    this.holdIdx = -1;
+    this.poss = { owner: -1, ownerSince: this.tick }; // stamps the failsafe clock
+
     this.prevBall = { x: 0, y: BALL.radius, z: 0 };
     this.ball.setTranslation({ x: 0, y: BALL.radius, z: 0 }, true);
     this.ball.setLinvel({ x: 0, y: 0, z: 0 }, true);
@@ -237,10 +285,6 @@ export class Match {
       this.kickoff();
       this.phase = 'playing';
       this.events.push({ kind: 'kick', playerIndex: -1, detail: 'kickoff' });
-    }
-    if (this.phase === 'freekick' && this.tick >= this.pauseUntil) {
-      this.phase = 'playing';
-      this.events.push({ kind: 'kick', playerIndex: -1, detail: 'play-on' });
     }
 
     if (this.phase === 'playing') {
@@ -301,6 +345,17 @@ export class Match {
         }
       }
 
+      // keeper hands (saves/catches/hold maintenance) BEFORE control so a
+      // caught ball is glued this tick, not fought over
+      this.stepKeeperHands();
+
+      // dead-ball lock: during a restart ceremony only the taker (and only
+      // after the ceremony) may play the ball; a keeper hold locks to him
+      const rs = this.restartState;
+      const lockedTo = this.holdIdx >= 0
+        ? this.holdIdx
+        : rs ? rs.taker : -1;
+
       // ball control (traps + dribble touches) — skip for stunned/sliding
       const ctlEvents = stepBallControl(
         dt,
@@ -312,6 +367,7 @@ export class Match {
         this.poss,
         this.ctlTune,
         this.meta.map((m) => m.bot),
+        lockedTo,
       );
       for (const ev of ctlEvents) this.lastTouch = ev.playerIndex;
       if (this.poss.owner >= 0) this.lastTouch = this.poss.owner;
@@ -330,17 +386,60 @@ export class Match {
           events: this.events,
           poss: this.poss,
           ctlStates: this.ctlStates,
+          holdIdx: this.holdIdx,
+          canPlay: rs
+            ? (i: number) => i === rs.taker && this.tick >= rs.readyTick
+            : undefined,
         },
         this.inputs,
       );
+
+      // restart release: the taker's first touch puts the ball in play
+      if (this.restartState) {
+        const rst = this.restartState;
+        const b = this.ball.translation();
+        const VERBS = ['pass', 'through', 'shoot', 'lob'];
+        const kicked = this.events.some(
+          (e) => e.kind === 'kick' && e.playerIndex === rst.taker && VERBS.includes(e.detail ?? ''),
+        );
+        const moved = Math.hypot(b.x - rst.x, b.z - rst.z) > 1.0;
+        if (this.tick >= rst.readyTick && (kicked || moved)) {
+          // throw-ins travel by hand: flatten a drilled kick into a throw arc
+          if (rst.kind === 'throwin' && kicked) {
+            const v = this.ball.linvel();
+            const h = Math.hypot(v.x, v.z);
+            const cap = Math.min(h, 10);
+            const k = h > 0.01 ? cap / h : 1;
+            this.ball.setLinvel({ x: v.x * k, y: Math.max(v.y, 2.2), z: v.z * k }, true);
+          }
+          this.restartState = null;
+        } else if (this.tick > rst.readyTick + 6 * this.tickRate) {
+          this.restartState = null; // failsafe: never deadlock the match
+        }
+      }
+      // a keeper's kick out of his hands ends the hold
+      if (
+        this.holdIdx >= 0 &&
+        this.events.some(
+          (e) => e.kind === 'kick' && e.playerIndex === this.holdIdx
+            && ['pass', 'through', 'shoot', 'lob'].includes(e.detail ?? ''),
+        )
+      ) {
+        this.holdIdx = -1;
+      }
 
       // the referee rules on fouls raised above (advantage / free kick / cards)
       this.refereeLaws();
 
       // ball in play: first touch off the spot releases the kickoff hold
+      // (with a failsafe — a wandering human taker must never freeze play)
       if (this.kickoffHold) {
         const b = this.ball.translation();
-        if (Math.hypot(b.x, b.z) > 1.0 || this.events.some((e) => e.kind === 'kick' && e.playerIndex >= 0)) {
+        if (
+          Math.hypot(b.x, b.z) > 1.0 ||
+          this.events.some((e) => e.kind === 'kick' && e.playerIndex >= 0) ||
+          this.tick - this.poss.ownerSince > 6 * this.tickRate
+        ) {
           this.kickoffHold = false;
         }
       }
@@ -368,23 +467,36 @@ export class Match {
       }
       this.prevBall = { x: bp.x, y: bp.y, z: bp.z };
 
-      // OUT OF PLAY: lofted balls clear the 1m boards or the crossbar and
-      // land where nobody can reach (players never leave the field). Natural
-      // restart instead of a dead ball:
-      //  - over a side board  -> throw-in at the boundary point
-      //  - behind a goal line without a goal -> goal kick from the 6-yard box
-      if (this.phase === 'playing') {
-        const OUT = 0.4;
+      // OUT OF PLAY — the actual laws, decided by who touched it last:
+      //  - over a touchline            -> THROW-IN, other team
+      //  - over a goal line, attacker last -> GOAL KICK (keeper takes)
+      //  - over a goal line, defender last -> CORNER for the attackers
+      if (this.phase === 'playing' && !this.restartState) {
+        const OUT = BALL.radius + 0.15;
+        const lastTeam = this.lastTouch >= 0 ? this.meta[this.lastTouch].team : (0 as 0 | 1);
         if (Math.abs(bp.z) > W / 2 + OUT) {
-          this.restartBall(
-            Math.max(-L / 2 + 2, Math.min(L / 2 - 2, bp.x)),
-            Math.sign(bp.z) * (W / 2 - 0.8),
-            'throwin',
+          const toTeam = (1 - lastTeam) as 0 | 1;
+          this.setupRestart(
+            'throwin', toTeam,
+            Math.max(-L / 2 + 1, Math.min(L / 2 - 1, bp.x)),
+            Math.sign(bp.z) * (W / 2 - 0.3),
           );
         } else if (Math.abs(bp.x) > L / 2 + OUT) {
-          // crossed the end line and the crossing detector above didn't award
-          // a goal (over the bar / wide behind the frame)
-          this.restartBall(Math.sign(bp.x) * (L / 2 - 3), 0, 'goalkick');
+          const side = Math.sign(bp.x); // which goal line it crossed
+          // team defending that goal line
+          const defTeam = (side === -1 ? 0 : 1) as 0 | 1;
+          if (lastTeam === defTeam) {
+            // defender put it behind his own line: corner for the attackers
+            const atkTeam = (1 - defTeam) as 0 | 1;
+            this.setupRestart(
+              'corner', atkTeam,
+              side * (L / 2 - 0.25),
+              (bp.z >= 0 ? 1 : -1) * (W / 2 - 0.25),
+            );
+          } else {
+            // attacker put it out: goal kick from the goal area
+            this.setupRestart('goalkick', defTeam, side * (L / 2 - BOX.sixDepth - 0.2), 0);
+          }
         }
       }
 
@@ -475,30 +587,21 @@ export class Match {
       return;
     }
     if (this.tick - pf.tick > Math.round(0.7 * this.tickRate)) {
-      // whistle: free kick where it happened
-      const fx = Math.max(-L / 2 + 1.5, Math.min(L / 2 - 1.5, pf.x));
-      const fz = Math.max(-W / 2 + 1.5, Math.min(W / 2 - 1.5, pf.z));
-      this.restartBall(fx, fz, 'goalkick'); // reuse dead-ball placement
-      this.events.pop(); // drop the goalkick event; it's a free kick
-      this.events.push({ kind: 'kick', playerIndex: pf.offender, detail: 'freekick' });
-      // nearest fouled-team player steps up to take it
-      let taker = -1, td = Infinity;
-      for (let i = 0; i < this.players.length; i++) {
-        if (this.meta[i].team !== pf.victimTeam) continue;
-        const p = this.players[i].pos;
-        const d = Math.hypot(p.x - fx, p.z - fz);
-        if (d < td) { td = d; taker = i; }
-      }
-      if (taker >= 0) {
-        const back = this.meta[taker].team === 0 ? -1.2 : 1.2;
-        this.players[taker].body.setTranslation(
-          { x: Math.max(-L / 2 + 1, Math.min(L / 2 - 1, fx + back)), y: PLAYER.height / 2, z: fz },
-          true,
-        );
-      }
+      // whistle. A foul by a defender inside HIS OWN penalty area is a
+      // PENALTY KICK; anywhere else it's a direct free kick at the spot.
       this.bookOffender(pf.offender);
-      this.phase = 'freekick';
-      this.pauseUntil = this.tick + Math.round(1.3 * this.tickRate);
+      const offTeam = this.meta[pf.offender].team;
+      const ownSign = offTeam === 0 ? -1 : 1;
+      const inOwnBox = Math.sign(pf.x) === ownSign && Math.abs(pf.x) > L / 2 - BOX.penDepth
+        && Math.abs(pf.z) < BOX.penWidth / 2;
+      if (inOwnBox) {
+        const attack = pf.victimTeam === 0 ? 1 : -1;
+        this.setupRestart('penalty', pf.victimTeam, attack * (L / 2 - BOX.spotDist), 0);
+      } else {
+        const fx = Math.max(-L / 2 + 1.0, Math.min(L / 2 - 1.0, pf.x));
+        const fz = Math.max(-W / 2 + 1.0, Math.min(W / 2 - 1.0, pf.z));
+        this.setupRestart('freekick', pf.victimTeam, fx, fz);
+      }
       this.pendingFoul = null;
     }
   }
@@ -522,15 +625,205 @@ export class Match {
     }
   }
 
-  /** dead-ball restart: place the ball, kill motion, release possession */
-  private restartBall(x: number, z: number, kind: 'throwin' | 'goalkick') {
+  /** place a dead ball: kill motion, release possession, clear hand-holds */
+  private placeBall(x: number, z: number) {
     this.ball.setTranslation({ x, y: BALL.radius, z }, true);
     this.ball.setLinvel({ x: 0, y: 0, z: 0 }, true);
     this.ball.setAngvel({ x: 0, y: 0, z: 0 }, true);
     this.prevBall = { x, y: BALL.radius, z };
     this.poss = { owner: -1, ownerSince: this.tick };
+    this.holdIdx = -1;
     for (const s of this.ctlStates) s.cooldown = 0;
-    this.events.push({ kind: 'kick', playerIndex: -1, detail: kind });
+  }
+
+  /** move every opponent of `team` at least `r` meters from (x,z) */
+  private pushOpponents(team: 0 | 1, x: number, z: number, r: number) {
+    const BX = L / 2 - PLAYER.capsuleRadius;
+    const BZ = W / 2 - PLAYER.capsuleRadius;
+    for (let i = 0; i < this.players.length; i++) {
+      if (this.meta[i].team === team) continue;
+      const p = this.players[i].pos;
+      const d = Math.hypot(p.x - x, p.z - z);
+      if (d >= r) continue;
+      // radially out, biased toward their own goal so retreats look natural
+      const own = this.meta[i].team === 0 ? -1 : 1;
+      let nx = d > 0.05 ? (p.x - x) / d : own;
+      let nz = d > 0.05 ? (p.z - z) / d : 0;
+      nx = nx * 0.7 + own * 0.3;
+      const nl = Math.hypot(nx, nz) || 1;
+      this.players[i].body.setTranslation(
+        {
+          x: Math.max(-BX, Math.min(BX, x + (nx / nl) * r)),
+          y: PLAYER.height / 2,
+          z: Math.max(-BZ, Math.min(BZ, z + (nz / nl) * r)),
+        },
+        true,
+      );
+      this.players[i].velX = 0;
+      this.players[i].velZ = 0;
+    }
+  }
+
+  /**
+   * Set up a dead-ball restart per the laws: ball placed at the spot, the
+   * right taker steps up (keeper for goal kicks, nearest outfielder
+   * otherwise), opponents retreat the legal distance (everyone out of the
+   * box for penalties), and the ball is locked to the taker until his
+   * first touch puts it back in play.
+   */
+  setupRestart(kind: RestartKind, team: 0 | 1, x: number, z: number) {
+    const attack = team === 0 ? 1 : -1; // direction this team attacks
+    this.placeBall(x, z);
+
+    // choose the taker
+    let taker = -1;
+    if (kind === 'goalkick') taker = this.keeperOf(team);
+    if (taker < 0) {
+      let td = Infinity;
+      for (let i = 0; i < this.players.length; i++) {
+        if (this.meta[i].team !== team) continue;
+        if (kind !== 'goalkick' && this.meta[i].keeper && this.players.length > 2) continue;
+        const p = this.players[i].pos;
+        const d = Math.hypot(p.x - x, p.z - z);
+        if (d < td) { td = d; taker = i; }
+      }
+    }
+    if (taker < 0) taker = this.keeperOf(team); // degenerate teams
+
+    // stand the taker a step behind the ball, facing his attacking end
+    if (taker >= 0) {
+      const BX = L / 2 - PLAYER.capsuleRadius;
+      const BZ = W / 2 - PLAYER.capsuleRadius;
+      const tx = Math.max(-BX, Math.min(BX, x - attack * 1.1));
+      const tz = Math.max(-BZ, Math.min(BZ, z + (z > 0 ? -0.4 : 0.4)));
+      this.players[taker].body.setTranslation({ x: tx, y: PLAYER.height / 2, z: tz }, true);
+      this.players[taker].velX = 0;
+      this.players[taker].velZ = 0;
+      this.players[taker].yaw = Math.atan2(z - tz, x - tx);
+    }
+
+    // legal retreat distances (9.15m scaled to our pitch for free kicks)
+    if (kind === 'penalty') {
+      // everyone except the taker and the defending keeper leaves the box
+      const defTeam = (1 - team) as 0 | 1;
+      const gk = this.keeperOf(defTeam);
+      const goalX = attack * (L / 2);
+      const edgeX = attack * (L / 2 - BOX.penDepth - 0.8);
+      for (let i = 0; i < this.players.length; i++) {
+        if (i === taker || i === gk) continue;
+        const p = this.players[i].pos;
+        const inBox = Math.abs(p.x) > L / 2 - BOX.penDepth && Math.sign(p.x) === Math.sign(goalX)
+          && Math.abs(p.z) < BOX.penWidth / 2 + 0.5;
+        if (inBox) {
+          this.players[i].body.setTranslation(
+            { x: edgeX, y: PLAYER.height / 2, z: Math.max(-W / 2 + 1, Math.min(W / 2 - 1, p.z)) },
+            true,
+          );
+          this.players[i].velX = 0;
+          this.players[i].velZ = 0;
+        }
+      }
+      // keeper on his line
+      if (gk >= 0) {
+        this.players[gk].body.setTranslation(
+          { x: attack * (L / 2 - 0.45), y: PLAYER.height / 2, z: 0 },
+          true,
+        );
+        this.players[gk].velX = 0;
+        this.players[gk].velZ = 0;
+        this.players[gk].yaw = Math.atan2(0, -attack);
+      }
+    } else if (kind === 'goalkick') {
+      // opponents out of the penalty area while the kick is taken
+      const own = -attack;
+      for (let i = 0; i < this.players.length; i++) {
+        if (this.meta[i].team === team) continue;
+        const p = this.players[i].pos;
+        const inBox = Math.abs(p.x) > L / 2 - BOX.penDepth && Math.sign(p.x) === Math.sign(own)
+          && Math.abs(p.z) < BOX.penWidth / 2 + 0.5;
+        if (inBox) {
+          this.players[i].body.setTranslation(
+            { x: own * (L / 2 - BOX.penDepth - 1.0), y: PLAYER.height / 2, z: p.z },
+            true,
+          );
+          this.players[i].velX = 0;
+          this.players[i].velZ = 0;
+        }
+      }
+    } else {
+      this.pushOpponents(team, x, z, kind === 'freekick' ? 3.5 : 2.0);
+    }
+
+    const ceremony = kind === 'penalty' ? 2.0 : 1.1;
+    this.restartState = {
+      kind, team, taker, x, z,
+      readyTick: this.tick + Math.round(ceremony * this.tickRate),
+    };
+    this.events.push({ kind: 'kick', playerIndex: taker, detail: kind });
+  }
+
+  /**
+   * GOALKEEPER HANDS — inside his own penalty area a keeper meets shots
+   * with his hands: a catchable shot is HELD (play flows through his
+   * distribution), a screamer is PARRIED away. While held the ball rides
+   * at his chest and cannot be challenged.
+   */
+  private stepKeeperHands() {
+    // maintain an active hold: ball glued at chest height, auto-release
+    // after ~3.5s (the six-second law, scaled to arena tempo)
+    if (this.holdIdx >= 0) {
+      const k = this.players[this.holdIdx];
+      const hx = k.pos.x + Math.cos(k.yaw) * 0.35;
+      const hz = k.pos.z + Math.sin(k.yaw) * 0.35;
+      this.ball.setTranslation({ x: hx, y: 0.95, z: hz }, true);
+      this.ball.setLinvel({ x: k.velX, y: 0, z: k.velZ }, true);
+      this.ball.setAngvel({ x: 0, y: 0, z: 0 }, true);
+      this.poss.owner = this.holdIdx;
+      if (this.tick - this.holdSince > 3.5 * this.tickRate) {
+        this.holdIdx = -1; // put it down and play with the feet
+      }
+      return;
+    }
+    if (this.restartState) return; // dead ball: no diving on ceremonies
+
+    const bp = this.ball.translation();
+    const bv = this.ball.linvel();
+    const sp = Math.hypot(bv.x, bv.y, bv.z);
+    for (const team of [0, 1] as const) {
+      const gi = this.keeperOf(team);
+      if (gi < 0) continue;
+      const own = team === 0 ? -1 : 1;
+      // ball inside this keeper's own penalty area?
+      const inBox = Math.sign(bp.x) === own && Math.abs(bp.x) > L / 2 - BOX.penDepth
+        && Math.abs(bp.z) < BOX.penWidth / 2;
+      if (!inBox) continue;
+      const k = this.players[gi];
+      const d = Math.hypot(bp.x - k.pos.x, bp.z - k.pos.z);
+      if (d > 1.3 || bp.y > 2.0) continue;
+      // moving toward our goal = a shot to deal with
+      const towardGoal = bv.x * own > 1.5;
+      if (sp > 8.5 && towardGoal && this.actStates[gi].stunUntilTick <= this.tick) {
+        if (sp < 15) {
+          // CATCH: dead in the gloves
+          this.holdIdx = gi;
+          this.holdSince = this.tick;
+          this.poss = { owner: gi, ownerSince: this.tick };
+          this.ball.setLinvel({ x: 0, y: 0, z: 0 }, true);
+          this.ball.setAngvel({ x: 0, y: 0, z: 0 }, true);
+          this.events.push({ kind: 'save', playerIndex: gi, detail: 'catch' });
+        } else {
+          // PARRY: too hot to hold — beaten away from goal, up and wide
+          const away = -own;
+          this.ball.setLinvel(
+            { x: away * sp * 0.4, y: Math.max(2.5, bv.y * 0.3 + 2), z: (bp.z >= k.pos.z ? 1 : -1) * sp * 0.35 },
+            true,
+          );
+          this.actStates[gi].stunUntilTick = this.tick + Math.round(0.5 * this.tickRate);
+          this.events.push({ kind: 'save', playerIndex: gi, detail: 'parry' });
+        }
+        this.lastTouch = gi;
+      }
+    }
   }
 
   private goal(team: 0 | 1) {
@@ -609,6 +902,7 @@ export class Match {
         stunned: this.tick < this.actStates[i].stunUntilTick,
         sliding: this.tick < this.actStates[i].slideUntilTick,
         shielding: !!this.inputs[i].shield,
+        holding: this.holdIdx === i,
       })),
       events: this.events,
     };

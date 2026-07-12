@@ -51,8 +51,10 @@ export function botThink(match: Match, i: number): PlayerFullInput {
   // man. Everyone else holds his kickoff spot. Kills the center scrum.
   if (match.kickoffHold && !iHaveIt) {
     if (meta.team !== match.kickoffTeam) return inp; // stand off the circle
+    // nearest BOT takes it — waiting on an idle human deadlocks the match
     let takerIdx = -1, td = Infinity;
     for (const e of mates) {
+      if (!e.m.bot) continue;
       const d = distBall(e.idx);
       if (d < td) { td = d; takerIdx = e.idx; }
     }
@@ -123,6 +125,54 @@ export function botThink(match: Match, i: number): PlayerFullInput {
     }
     return true;
   };
+
+  // GOALKEEPER HOLDING THE BALL: settle, then distribute — a lob clears
+  // long. Real keepers don't dribble out of the box.
+  if (match.holdIdx === i) {
+    const heldFor = match.tick - match.poss.ownerSince;
+    inp.mx = 0; inp.mz = 0;
+    if (heldFor > Math.round(0.8 * 30)) pulse(inp, 'lob', match.tick, 20);
+    return inp;
+  }
+
+  // DEAD-BALL RESTARTS: the taker walks in and plays it per the set piece;
+  // everyone else holds position (opponents by law, teammates for shape).
+  const rs = match.restartState;
+  if (rs) {
+    if (rs.taker !== i) return inp;            // hold your ground
+    if (match.tick < rs.readyTick) return inp; // ceremony: stand over it
+    const dRest = distBall(i);
+    if (dRest > 0.75 && !iHaveIt) {
+      // dead ball: walk straight to it, slow enough to take it
+      seek(bp.x, bp.z, { stopAt: 0.12, mag: dRest > 3 ? 0.9 : 0.45 });
+      return inp;
+    }
+    // at the ball: face the right way, choose the verb per set piece
+    switch (rs.kind) {
+      case 'penalty':
+        // charged strike at goal
+        seek(attackX, 0, { stopAt: 0.2, mag: 0.3 });
+        inp.shoot = match.actStates[i].shootHeldMs < 380;
+        return inp;
+      case 'corner': {
+        // lob into the box toward the penalty spot
+        const spotX = attackX > 0 ? L / 2 - 4.2 : -L / 2 + 4.2;
+        seek(spotX, 0, { stopAt: 0.2, mag: 0.3 });
+        pulse(inp, 'lob', match.tick, 18);
+        return inp;
+      }
+      case 'goalkick':
+        // clear upfield
+        seek(attackX, 0, { stopAt: 0.2, mag: 0.3 });
+        pulse(inp, 'lob', match.tick, 18);
+        return inp;
+      default:
+        // throw-in / free kick: find a teammate (the pass cone aims it)
+        seek(attackX, me.pos.z, { stopAt: 0.2, mag: 0.3 });
+        pulse(inp, 'pass', match.tick, 18);
+        return inp;
+    }
+  }
 
   if (iHaveIt) {
     // ================= ON THE BALL =================
@@ -262,10 +312,18 @@ export function botThink(match: Match, i: number): PlayerFullInput {
       z: Math.sign(me.pos.z || 1) * Math.min(W * 0.3, Math.abs(me.pos.z) + 2),
     };
   } else {
-    // zone home: between ball and own goal, spread by index
     const nth = mates.findIndex((e) => e.idx === i);
     const lane = ((nth % 3) - 1) * (W * 0.27);
-    spot = { x: (bp.x + defendX) / 2, z: lane };
+    if (weHaveIt) {
+      // ATTACKING SHAPE: push up with play — one support man just behind
+      // the ball line, the rest ahead in lanes. Open-field football needs
+      // bodies forward; five men parked halfway home is a sterile 0-0.
+      const ahead = nth % 2 === 0 ? 4.0 : -2.0;
+      spot = { x: bp.x + Math.sign(attackX) * ahead, z: lane };
+    } else {
+      // defensive zone home: between ball and own goal
+      spot = { x: (bp.x + defendX) / 2, z: lane };
+    }
   }
   // deadband: only move when the spot drifted — kills the jitter-running
   const prev = holdSpot.get(key);

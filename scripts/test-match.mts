@@ -441,5 +441,191 @@ const out: Record<string, unknown> = {};
   };
 }
 
+// 18. THROW-IN LAW: last touched by team 0 -> throw-in to team 1, ball on
+//     the line, taker from team 1, locked to him until he plays it
+{
+  const m = new Match(RAPIER, 30);
+  m.addPlayer('a', 'A', 0, false);
+  m.addPlayer('b', 'B', 1, false);
+  m.restart(180);
+  // team 0 (index 0) touches, then the ball is sent over the touchline
+  m.players[0].body.setTranslation({ x: 2, y: 0.91, z: 5 }, true);
+  m.ball.setTranslation({ x: 2.4, y: 0.11, z: 5 }, true);
+  for (let t = 0; t < 12; t++) { m.setInput(0, idleFullInput()); m.setInput(1, idleFullInput()); m.step(); }
+  const touched = m.lastTouch;
+  m.ball.setLinvel({ x: 0, y: 4, z: 14 }, true);
+  let ev = '';
+  for (let t = 0; t < 90 && !ev; t++) {
+    m.setInput(0, idleFullInput()); m.setInput(1, idleFullInput());
+    for (const e of m.step()) if (e.detail === 'throwin') ev = e.detail;
+  }
+  const rs = m.restartState;
+  const bp = m.ball.translation();
+  out.throwInLaw = {
+    lastTouchWas: touched,
+    event: ev,
+    awardedTo: rs?.team,
+    takerTeam: rs ? m.meta[rs.taker].team : -1,
+    ballOnLine: +Math.abs(bp.z).toFixed(2),
+    ok: ev === 'throwin' && touched === 0 && rs?.team === 1 && Math.abs(Math.abs(bp.z) - 9.7) < 0.4,
+  };
+}
+
+// 19. CORNER vs GOAL KICK by last touch: attacker puts it behind -> goal
+//     kick (keeper takes); defender deflects it behind -> corner
+{
+  const m = new Match(RAPIER, 30);
+  for (let n = 0; n < 2; n++) m.addPlayer(`bot-0-${n}`, `A${n}`, 0, true);
+  for (let n = 0; n < 2; n++) m.addPlayer(`bot-1-${n}`, `B${n}`, 1, true);
+  m.restart(180);
+  // attacker (team 0) last touch, ball over team 1's goal line (x = +L/2), wide
+  m.players[1].body.setTranslation({ x: 14, y: 0.91, z: 6 }, true);
+  m.ball.setTranslation({ x: 14.4, y: 0.11, z: 6 }, true);
+  for (let t = 0; t < 10; t++) { for (let i = 0; i < 4; i++) m.setInput(i, idleFullInput()); m.step(); }
+  m.ball.setLinvel({ x: 16, y: 3, z: 4 }, true); // over the line, wide of goal
+  let kind = '';
+  for (let t = 0; t < 90 && !kind; t++) {
+    for (let i = 0; i < 4; i++) m.setInput(i, idleFullInput());
+    for (const e of m.step()) if (e.detail === 'goalkick' || e.detail === 'corner') kind = e.detail;
+  }
+  const gkTaker = m.restartState ? m.meta[m.restartState.taker] : null;
+  out.goalKickLaw = {
+    kind,
+    takerIsKeeper: !!gkTaker?.keeper,
+    takerTeam: gkTaker?.team,
+    ok: kind === 'goalkick' && !!gkTaker?.keeper && gkTaker?.team === 1,
+  };
+
+  // now a DEFENDER (team 1) last touch -> corner for team 0
+  const m2 = new Match(RAPIER, 30);
+  for (let n = 0; n < 2; n++) m2.addPlayer(`bot-0-${n}`, `A${n}`, 0, true);
+  for (let n = 0; n < 2; n++) m2.addPlayer(`bot-1-${n}`, `B${n}`, 1, true);
+  m2.restart(180);
+  m2.players[2].body.setTranslation({ x: 14, y: 0.91, z: 6 }, true); // team 1 defender
+  m2.ball.setTranslation({ x: 14.4, y: 0.11, z: 6 }, true);
+  for (let t = 0; t < 10; t++) { for (let i = 0; i < 4; i++) m2.setInput(i, idleFullInput()); m2.step(); }
+  m2.ball.setLinvel({ x: 16, y: 3, z: 4 }, true);
+  kind = '';
+  for (let t = 0; t < 90 && !kind; t++) {
+    for (let i = 0; i < 4; i++) m2.setInput(i, idleFullInput());
+    for (const e of m2.step()) if (e.detail === 'goalkick' || e.detail === 'corner') kind = e.detail;
+  }
+  const bp2 = m2.ball.translation();
+  out.cornerLaw = {
+    kind,
+    awardedTo: m2.restartState?.team,
+    atCorner: Math.abs(bp2.x) > 19 && Math.abs(bp2.z) > 9,
+    ok: kind === 'corner' && m2.restartState?.team === 0 && Math.abs(bp2.x) > 19 && Math.abs(bp2.z) > 9,
+  };
+}
+
+// 20. PENALTY: defender slide-fouls the carrier inside HIS OWN box ->
+//     penalty at the spot, everyone but taker+keeper out of the box
+{
+  const m = new Match(RAPIER, 30);
+  for (let n = 0; n < 3; n++) m.addPlayer(`bot-0-${n}`, `A${n}`, 0, true);
+  for (let n = 0; n < 3; n++) m.addPlayer(`bot-1-${n}`, `B${n}`, 1, true);
+  m.restart(180);
+  // carrier (team 0) inside team 1's box (x near +L/2); defender behind him
+  m.players[1].body.setTranslation({ x: 15.5, y: 0.91, z: 1 }, true);
+  m.players[1].yaw = 0;
+  m.players[4].body.setTranslation({ x: 14.1, y: 0.91, z: 1 }, true);
+  m.players[4].yaw = 0;
+  m.ball.setTranslation({ x: 16.0, y: 0.11, z: 1 }, true);
+  m.ball.setLinvel({ x: 0, y: 0, z: 0 }, true);
+  let pen = '';
+  for (let t = 0; t < 150 && !pen; t++) {
+    for (let i = 0; i < 6; i++) m.setInput(i, idleFullInput());
+    const ic = idleFullInput(); ic.mx = 0.25; m.setInput(1, ic);
+    const idf = idleFullInput(); idf.mx = 1; idf.sprint = true; idf.slide = t === 8; m.setInput(4, idf);
+    const evs = m.step();
+    for (const e of evs) {
+      if (e.kind === 'foul') {
+        // knock the ball clear so no advantage plays
+        m.ball.setTranslation({ x: -14, y: 0.11, z: -7 }, true);
+        m.ball.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      }
+      if (e.detail === 'penalty') pen = e.detail;
+    }
+  }
+  const bp = m.ball.translation();
+  const rs = m.restartState;
+  let cleared = true;
+  if (rs) {
+    for (let i = 0; i < 6; i++) {
+      if (i === rs.taker || i === m.keeperOf(1)) continue;
+      const p = m.players[i].pos;
+      if (p.x > 20 - 6.29 && Math.abs(p.z) < 11.85 / 2) cleared = false;
+    }
+  }
+  out.penaltyLaw = {
+    event: pen,
+    spotX: +bp.x.toFixed(2),
+    boxCleared: cleared,
+    takerTeam: rs?.team,
+    ok: pen === 'penalty' && Math.abs(bp.x - (20 - 4.19)) < 0.3 && cleared && rs?.team === 0,
+  };
+}
+
+// 21. KEEPER HANDS: a catchable shot at the keeper in his box is HELD
+//     (possession, ball at chest, save event); a screamer is PARRIED away
+{
+  const m = new Match(RAPIER, 30);
+  m.addPlayer('gk', 'GK', 1, true); // bot -> keeper spot
+  m.addPlayer('st', 'ST', 0, false);
+  m.restart(180);
+  const gk = m.keeperOf(1);
+  m.players[gk].body.setTranslation({ x: 19, y: 0.91, z: 0 }, true);
+  // catchable shot: 12 m/s straight at him
+  m.ball.setTranslation({ x: 15, y: 0.3, z: 0 }, true);
+  m.ball.setLinvel({ x: 12, y: 0.5, z: 0 }, true);
+  let saved = '';
+  for (let t = 0; t < 60 && !saved; t++) {
+    m.setInput(0, idleFullInput()); m.setInput(1, idleFullInput());
+    for (const e of m.step()) if (e.kind === 'save') saved = e.detail ?? '';
+  }
+  // let the glue take effect (applied at the top of the next tick)
+  for (let t = 0; t < 3; t++) { m.setInput(0, idleFullInput()); m.setInput(1, idleFullInput()); m.step(); }
+  const bp = m.ball.translation();
+  out.keeperCatch = {
+    save: saved,
+    holding: m.holdIdx === gk,
+    ballAtChest: +bp.y.toFixed(2),
+    ok: saved === 'catch' && m.holdIdx === gk && bp.y > 0.7,
+  };
+
+  // then he distributes (bot lob) and the hold ends
+  let released = false;
+  for (let t = 0; t < 150 && !released; t++) {
+    const { botThink } = await import('../src/shared/sim3d/bots');
+    m.setInput(0, botThink(m, 0));
+    m.setInput(1, idleFullInput());
+    m.step();
+    if (m.holdIdx < 0) released = true;
+  }
+  out.keeperDistribute = { released, ok: released };
+
+  // PARRY: 20 m/s screamer
+  const m3 = new Match(RAPIER, 30);
+  m3.addPlayer('gk', 'GK', 1, true);
+  m3.restart(180);
+  const g3 = m3.keeperOf(1);
+  m3.players[g3].body.setTranslation({ x: 19, y: 0.91, z: 0 }, true);
+  m3.ball.setTranslation({ x: 14, y: 0.4, z: 0 }, true);
+  m3.ball.setLinvel({ x: 20, y: 0.5, z: 0 }, true);
+  let parry = '';
+  for (let t = 0; t < 60 && !parry; t++) {
+    m3.setInput(0, idleFullInput());
+    for (const e of m3.step()) if (e.kind === 'save') parry = e.detail ?? '';
+  }
+  const v3 = m3.ball.linvel();
+  out.keeperParry = {
+    save: parry,
+    deflectedAway: v3.x < 0 || m3.score[0] === 0,
+    noGoal: m3.score[0] === 0,
+    ok: parry === 'parry' && m3.score[0] === 0,
+  };
+}
+
 console.log(JSON.stringify(out, null, 1));
 process.exit(0);

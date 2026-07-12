@@ -123,6 +123,8 @@ export interface CharState {
   shield?: boolean;
   sliding?: boolean;
   stunned?: boolean;
+  /** keeper holding the ball in his hands (arms cradle) */
+  holding?: boolean;
   /** world yaw toward the ball — the head subtly tracks it */
   lookYaw?: number;
   /** the model's world yaw (to convert lookYaw into a local head turn) */
@@ -150,9 +152,13 @@ export class CharModel {
   private speedF = 0; // filtered speed for stable state picks
   // referee card ceremony: arm held high, card in hand
   private upperArmL: THREE.Object3D | null = null;
+  private upperArmR: THREE.Object3D | null = null;
   private handL: THREE.Object3D | null = null;
   private cardMesh: THREE.Mesh | null = null;
   private cardT = 0;
+  // keeper: both-arms burst (save/throw) + smoothed cradle while holding
+  private armsT = 0;
+  private cradle = 0;
 
   constructor(team: KitTeam, seed = 0) {
     const model = skeletonClone(gltf!.scene);
@@ -175,6 +181,7 @@ export class CharModel {
       if (o.name === 'calf_l') this.calfL = o;
       if (o.name === 'Head') this.head = o;
       if (o.name === 'upperarm_l') this.upperArmL = o;
+      if (o.name === 'upperarm_r') this.upperArmR = o;
       if (o.name === 'hand_l') this.handL = o;
     });
     // the card lives in the ref's hand, hidden until shown. Bone space still
@@ -213,6 +220,11 @@ export class CharModel {
 
   triggerKick() {
     this.kickT = 1;
+  }
+
+  /** keeper save / throw-in: both arms thrown up for ~0.8s */
+  triggerArms() {
+    this.armsT = 0.8;
   }
 
   /** referee: hold a card overhead for ~2s (yellow or red) */
@@ -275,6 +287,21 @@ export class CharModel {
       // UE-style skeleton: swing the thigh forward, extend the calf
       this.thighR?.rotateZ(-1.15 * k);
       this.calfR?.rotateZ(0.35 * k);
+    }
+
+    // keeper overlays — save burst (arms up) and ball-cradle while holding
+    if (this.armsT > 0) {
+      this.armsT = Math.max(0, this.armsT - dt);
+      const a = Math.min(1, this.armsT / 0.25);
+      this.upperArmL?.rotateZ(2.2 * a);
+      this.upperArmR?.rotateZ(-2.2 * a);
+    }
+    const cradleTarget = s.holding ? 1 : 0;
+    this.cradle += (cradleTarget - this.cradle) * (1 - Math.exp(-10 * dt));
+    if (this.cradle > 0.02) {
+      // forearms wrapped in front of the chest around the held ball
+      this.upperArmL?.rotateZ(1.15 * this.cradle);
+      this.upperArmR?.rotateZ(-1.15 * this.cradle);
     }
 
     // card ceremony overlay: left arm straight up, card visible in hand

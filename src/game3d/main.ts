@@ -41,6 +41,7 @@ interface Snap {
   players: {
     id: string; x: number; z: number; vx: number; vz: number; yaw: number;
     stamina: number; charge: number; stunned: boolean; sliding: boolean; shielding: boolean;
+    holding?: boolean;
   }[];
 }
 let ws: WebSocket | null = null;
@@ -844,7 +845,19 @@ function onMsg(m: any) {
       if (m.kind === 'kickoff') { winner = null; banner('KICKOFF', 900); sfx.whistle('kickoff'); }
       if (m.kind === 'end') { winner = m.winner; sfx.whistle('full'); }
       if (m.kind === 'foul') banner('FOUL!', 1000);
-      if (m.kind === 'restart') banner(m.what === 'throwin' ? 'THROW-IN' : 'GOAL KICK', 1000);
+      if (m.kind === 'restart') {
+        const names: Record<string, string> = {
+          throwin: 'THROW-IN', goalkick: 'GOAL KICK', corner: 'CORNER', penalty: 'PENALTY!',
+        };
+        banner(names[m.what] ?? 'RESTART', m.what === 'penalty' ? 1800 : 1000);
+        if (m.what === 'penalty') sfx.whistle('foul');
+        if (m.id === myId) hint('YOU TAKE IT — walk to the ball and PASS / SHOOT / LOB', 2600);
+      }
+      if (m.kind === 'save') {
+        banner('SAVE!', 900);
+        const mdl = models.get(m.id);
+        if (mdl && 'triggerArms' in mdl.rig) (mdl.rig as any).triggerArms();
+      }
       if (m.kind === 'freekick') { banner('FREE KICK', 1400); sfx.whistle('foul'); }
       if (m.kind === 'advantage') banner('ADVANTAGE — PLAY ON', 1200);
       if (m.kind === 'card') {
@@ -942,12 +955,14 @@ function frame() {
       if (prevActs[k] && !acts[k]) kickReleasedAt = now;
       prevActs[k] = !!acts[k];
     }
+    const meHolding = !!view.latest.players.find((p) => p.id === myId)?.holding;
     const iCarry =
       serverOwnerId !== null &&
       serverOwnerId === myId &&
       localMe !== null &&
       now - kickReleasedAt > 600 &&
-      phase === 'playing';
+      phase === 'playing' &&
+      !meHolding; // ball in my (keeper) hands renders at the chest, not the feet
     if (iCarry) {
       // ball rides the PREDICTED feet — zero perceived lag through turns
       const lead = 0.32 + Math.min(0.25, (visSpeed / 8.5) * 0.25);
@@ -1036,6 +1051,7 @@ function frame() {
         shield: p.shielding,
         sliding: p.sliding,
         stunned: p.stunned,
+        holding: p.holding,
         lookYaw: Math.atan2(ballVis.z - pz, ballVis.x - px),
         bodyYaw: pyaw,
       } as any);
