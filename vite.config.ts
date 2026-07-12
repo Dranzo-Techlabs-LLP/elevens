@@ -10,5 +10,11 @@ export default defineConfig({
       input: { lab: 'lab.html', play3d: 'play3d.html' },
     },
     outDir: 'dist-web',
+    // Do NOT copy public/ into dist-web: public/ is the LEGACY game, and a
+    // frozen copy inside dist-web would shadow the live one at serve time
+    // (the node server checks dist-web first). Shared assets (chars GLB)
+    // come from public/ via the server's fallback chain; vite's dev server
+    // still exposes public/ as usual.
+    copyPublicDir: false,
   },
 });

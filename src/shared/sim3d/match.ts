@@ -80,6 +80,12 @@ export class Match {
   private prevBall: { x: number; y: number; z: number } = { x: 0, y: BALL.radius, z: 0 };
   events: MatchEvent[] = [];
 
+  // ---- kickoff discipline ----
+  // Real law: the team that concedes restarts, and only they may play the
+  // ball until it's in play. Bots read these; a kickoff stops being a scrum.
+  kickoffTeam: 0 | 1 = 0;
+  kickoffHold = false;
+
   // ---- referee ----
   ref = { x: 0, z: 6, vx: 0, vz: 0, yaw: Math.PI };
   private yellows = new Map<number, number>(); // playerIndex -> yellow count
@@ -199,6 +205,7 @@ export class Match {
   }
 
   kickoff() {
+    this.kickoffHold = true;
     this.poss = { owner: -1, ownerSince: 0 };
     this.prevBall = { x: 0, y: BALL.radius, z: 0 };
     this.ball.setTranslation({ x: 0, y: BALL.radius, z: 0 }, true);
@@ -329,6 +336,14 @@ export class Match {
 
       // the referee rules on fouls raised above (advantage / free kick / cards)
       this.refereeLaws();
+
+      // ball in play: first touch off the spot releases the kickoff hold
+      if (this.kickoffHold) {
+        const b = this.ball.translation();
+        if (Math.hypot(b.x, b.z) > 1.0 || this.events.some((e) => e.kind === 'kick' && e.playerIndex >= 0)) {
+          this.kickoffHold = false;
+        }
+      }
 
       // aero + integrate
       this.applyBallAero(dt);
@@ -520,6 +535,7 @@ export class Match {
 
   private goal(team: 0 | 1) {
     this.score[team]++;
+    this.kickoffTeam = (1 - team) as 0 | 1; // conceding side restarts
     this.phase = 'goal';
     this.pauseUntil = this.tick + Math.round(2.2 * this.tickRate);
     this.events.push({ kind: 'kick', playerIndex: team, detail: 'goal' });

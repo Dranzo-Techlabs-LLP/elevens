@@ -11,10 +11,13 @@
     "build": "node build.mjs",
     "start": "node app.js",
     "start:dev": "tsx src/server/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:3d": "vite build",
+    "build:all": "node build.mjs && vite build"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.19.3",
+    "postprocessing": "^6.39.2",
     "three": "^0.185.1",
     "three-stdlib": "^2.36.1",
     "ws": "^8.18.0"

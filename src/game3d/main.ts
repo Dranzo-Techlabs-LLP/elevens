@@ -15,6 +15,9 @@ import { BALL, MATCH, PITCH_5S, PLAYER } from '../shared/config3d';
 import { SimPlayer, defaultMoveTune } from '../shared/sim3d/player';
 import { HumanRig } from '../lab/rig';
 import { CharModel, charsReady, loadChars } from './chars';
+import { BloomEffect, EffectComposer, EffectPass, RenderPass, SMAAEffect, VignetteEffect } from 'postprocessing';
+import { FX } from './fx';
+import { sfx } from './sfx';
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
 const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -47,9 +50,16 @@ let myTeam: 'A' | 'B' = 'A';
 let roomCode = '';
 let phase = 'lobby';
 
+const VITE_DEV_PORTS = new Set(['5173', '5174', '5175']);
 function wsUrl() {
   const p = new URLSearchParams(location.search);
-  const host = p.get('server') ?? `${location.hostname}:3011`;
+  // production: the node server serves this page AND the websocket on one
+  // port, so same-origin just works. Vite dev pages still target :3011.
+  // The ?server= override is DEV-ONLY: honoring it in production would let
+  // any crafted link repoint the game socket at an attacker's host.
+  const override = VITE_DEV_PORTS.has(location.port) ? p.get('server') : null;
+  const host = override
+    ?? (VITE_DEV_PORTS.has(location.port) ? `${location.hostname}:3011` : location.host);
   return `${location.protocol === 'https:' ? 'wss' : 'ws'}://${host}`;
 }
 
@@ -250,7 +260,15 @@ renderer.setPixelRatio(quality === 'low' ? 1 : Math.min(devicePixelRatio || 1, 1
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.22;
 renderer.shadowMap.enabled = quality === 'high';
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// r185 deprecated PCFSoft; PCF + a blur radius gives the same soft penumbra
+renderer.shadowMap.type = THREE.PCFShadowMap;
+
+// PES broadcast grade: SMAA + a restrained bloom (white lines, floodlit kits
+// glow like a TV feed) + lens vignette. Desktop only — the mobile 30fps floor
+// is non-negotiable, so 'low' keeps the plain forward render.
+const composer = quality === 'high'
+  ? new EffectComposer(renderer, { frameBufferType: THREE.HalfFloatType })
+  : null;
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.Fog(0x9fd4f5, 80, 240);
@@ -277,12 +295,26 @@ scene.fog = new THREE.Fog(0x9fd4f5, 80, 240);
   scene.add(dome);
 }
 const camera = new THREE.PerspectiveCamera(42, 1, 0.05, 400); // tighter = TV lens
+const BASE_FOV = 42;
+let fovPunch = 0; // goal moment: quick lens punch, decays to broadcast FOV
+if (composer) {
+  composer.addPass(new RenderPass(scene, camera));
+  composer.addPass(new EffectPass(
+    camera,
+    new SMAAEffect(),
+    new BloomEffect({ intensity: 0.42, luminanceThreshold: 0.72, luminanceSmoothing: 0.25, mipmapBlur: true }),
+    new VignetteEffect({ darkness: 0.42, offset: 0.26 }),
+  ));
+}
 
 scene.add(new THREE.HemisphereLight(0xcfe4ff, 0x2e7a3b, 0.85));
 const sun = new THREE.DirectionalLight(0xffe6bd, 1.85); // late-afternoon warmth
 sun.position.set(-16, 19, 11);
 sun.castShadow = quality === 'high';
-sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.mapSize.set(4096, 4096); // 56m frustum -> ~14mm/texel: crisp player shadows
+sun.shadow.radius = 4;              // PCF blur: soft penumbra edge, no shimmer
+sun.shadow.bias = -0.0002;          // acne vs peter-panning balance
+sun.shadow.normalBias = 0.02;
 Object.assign(sun.shadow.camera, { left: -28, right: 28, top: 24, bottom: -24, near: 4, far: 80 });
 scene.add(sun);
 
@@ -293,14 +325,27 @@ scene.add(sun);
   const tx = texC.getContext('2d')!;
   const PX = 2048 / L; // px per meter
   tx.fillStyle = '#2c9740'; tx.fillRect(0, 0, 2048, 1024); // richer base green
-  // mow stripes, PES-contrast two-tone
+  // PES cross-mow: lengthwise stripes AND faint widthwise bands — the
+  // alternating overlap reads as the classic broadcast checkerboard
   tx.fillStyle = 'rgba(190,255,190,0.10)';
   for (let i = 0; i < 10; i += 2) tx.fillRect(i * 204.8, 0, 204.8, 1024);
-  // grass noise
+  tx.fillStyle = 'rgba(180,255,180,0.05)';
+  for (let i = 0; i < 6; i += 2) tx.fillRect(0, i * 170.7, 2048, 170.7);
+  // grass grain: dark speckle + sparse sunlit blade highlights
   for (let i = 0; i < 9000; i++) {
     tx.fillStyle = `rgba(0,55,0,${Math.random() * 0.10})`;
     tx.fillRect(Math.random() * 2048, Math.random() * 1024, 2.5, 2.5);
   }
+  for (let i = 0; i < 3500; i++) {
+    tx.fillStyle = `rgba(215,255,205,${Math.random() * 0.07})`;
+    tx.fillRect(Math.random() * 2048, Math.random() * 1024, 1.5, 3);
+  }
+  // subtle edge falloff — TV cameras never show a uniformly lit pitch
+  const edge = tx.createRadialGradient(1024, 512, 480, 1024, 512, 1200);
+  edge.addColorStop(0, 'rgba(0,20,0,0)');
+  edge.addColorStop(1, 'rgba(0,25,0,0.16)');
+  tx.fillStyle = edge;
+  tx.fillRect(0, 0, 2048, 1024);
   // ---- REGULATION MARKINGS, scaled from a full-size pitch to 40x20 ----
   // px per meter is uniform (2048/40 == 1024/20), so we draw in meter space.
   const S = 2048 / L;
@@ -358,7 +403,9 @@ scene.add(sun);
   tx.beginPath(); tx.arc(inset, 1024 - inset, cr, Math.PI * 1.5, Math.PI * 2); tx.stroke();
   const ptex = new THREE.CanvasTexture(texC);
   ptex.colorSpace = THREE.SRGBColorSpace;
-  ptex.anisotropy = 4;
+  // full anisotropy: the broadcast camera grazes the pitch at a shallow
+  // angle — without this the far-half lines smear to mud
+  ptex.anisotropy = renderer.capabilities.getMaxAnisotropy();
   const pitch = new THREE.Mesh(new THREE.PlaneGeometry(L, W), new THREE.MeshLambertMaterial({ map: ptex }));
   pitch.rotation.x = -Math.PI / 2;
   pitch.receiveShadow = true;
@@ -605,6 +652,20 @@ const ballShadow = (() => {
   return m;
 })();
 
+// match effects (ball trail / kick puffs / goal confetti) + stadium audio.
+// Audio unlocks on the first gesture (browser autoplay policy).
+const fx = new FX(scene);
+const unlockAudio = () => {
+  sfx.unlock();
+  removeEventListener('pointerdown', unlockAudio);
+  removeEventListener('keydown', unlockAudio);
+};
+addEventListener('pointerdown', unlockAudio);
+addEventListener('keydown', unlockAudio);
+(window as any).__sfx = sfx; // debug/verification hook
+(window as any).__fx = fx;
+let crowdSent = -1; // last level pushed to sfx (ramps are scheduled; don't spam)
+
 // player models — real rigged characters when the GLB loaded, procedural
 // fallback otherwise. Both expose the same update/trigger surface.
 interface Model { rig: HumanRig | CharModel; label: THREE.Sprite; ring: THREE.Mesh; ringMat: THREE.MeshBasicMaterial; }
@@ -624,6 +685,30 @@ function label(text: string) {
   s.scale.set(1.9, 0.42, 1);
   return s;
 }
+// soft contact shadow shared by every character: even on 'low' (no shadow
+// maps) bodies stay GROUNDED — a figure without a contact patch floats
+const blobShadow = (() => {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const x = c.getContext('2d')!;
+  const g = x.createRadialGradient(32, 32, 4, 32, 32, 30);
+  g.addColorStop(0, 'rgba(0,0,0,0.34)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  x.fillStyle = g;
+  x.fillRect(0, 0, 64, 64);
+  const geo = new THREE.CircleGeometry(0.44, 20);
+  const mat = new THREE.MeshBasicMaterial({
+    map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false,
+  });
+  return () => {
+    const m = new THREE.Mesh(geo, mat);
+    m.rotation.x = -Math.PI / 2;
+    m.position.y = 0.015;
+    m.renderOrder = -1; // under feet, before bodies
+    return m;
+  };
+})();
+
 function getModel(id: string, name: string, team: 'A' | 'B') {
   let m = models.get(id);
   if (!m) {
@@ -632,6 +717,7 @@ function getModel(id: string, name: string, team: 'A' | 'B') {
     const rig = charsReady()
       ? new CharModel(team, seed)
       : new HumanRig(team === 'A' ? 0x2563eb : 0xdc2626, seed);
+    rig.group.add(blobShadow());
     scene.add(rig.group);
     const lb = label(name);
     lb.position.y = 2.15;
@@ -748,20 +834,32 @@ function onMsg(m: any) {
       break;
     }
     case 'e3':
-      if (m.kind === 'goal') banner(`GOAL!  ${m.score[0]} — ${m.score[1]}`);
-      if (m.kind === 'kickoff') { winner = null; banner('KICKOFF', 900); }
-      if (m.kind === 'end') winner = m.winner;
+      if (m.kind === 'goal') {
+        banner(`GOAL!  ${m.score[0]} — ${m.score[1]}`);
+        sfx.goal();
+        fovPunch = 1; // broadcast lens punch
+        // confetti erupts at the goal the ball just crossed
+        fx.goalBurst(Math.sign(ballVis.x) * (L / 2 - 0.6), Math.max(-2.5, Math.min(2.5, ballVis.z)));
+      }
+      if (m.kind === 'kickoff') { winner = null; banner('KICKOFF', 900); sfx.whistle('kickoff'); }
+      if (m.kind === 'end') { winner = m.winner; sfx.whistle('full'); }
       if (m.kind === 'foul') banner('FOUL!', 1000);
       if (m.kind === 'restart') banner(m.what === 'throwin' ? 'THROW-IN' : 'GOAL KICK', 1000);
-      if (m.kind === 'freekick') banner('FREE KICK', 1400);
+      if (m.kind === 'freekick') { banner('FREE KICK', 1400); sfx.whistle('foul'); }
       if (m.kind === 'advantage') banner('ADVANTAGE — PLAY ON', 1200);
       if (m.kind === 'card') {
         banner(`${m.color === 'red' ? 'RED' : 'YELLOW'} CARD — ${m.name ?? ''}`, 1800);
         refModel?.showCard(m.color === 'red' ? 'red' : 'yellow');
+        sfx.card();
       }
       if (m.kind === 'kick' && m.id) {
         const mdl = models.get(m.id);
-        if (mdl && 'triggerKick' in mdl.rig) (mdl.rig as any).triggerKick();
+        if (mdl && 'triggerKick' in mdl.rig) {
+          (mdl.rig as any).triggerKick();
+          const p = mdl.rig.group.position;
+          fx.kickPuff(p.x, p.z);
+        }
+        sfx.kick(0.65);
       }
       break;
     case 'error':
@@ -881,6 +979,16 @@ function frame() {
     const shk = Math.max(0.3, 1 - (ballVis.y - BALL.radius) / 8);
     ballShadow.scale.setScalar(shk);
 
+    // match FX (trail follows the RENDERED ball) + crowd bed — the stands
+    // lean in as play reaches either end
+    const bSpd = Math.hypot(view.latest.ball.vx, view.latest.ball.vy, view.latest.ball.vz);
+    fx.update(dtReal, ballVis.x, ballVis.y, ballVis.z, bSpd);
+    const crowdWant = 0.3 + 0.45 * Math.min(1, Math.abs(ballVis.x) / (L / 2));
+    if (Math.abs(crowdWant - crowdSent) > 0.04) {
+      sfx.setCrowd(crowdWant);
+      crowdSent = crowdWant;
+    }
+
     // players — bots encode their team in the id (bot-0-*, bot-1-*);
     // humans come from the cached lobby roster
     const seen = new Set<string>();
@@ -944,6 +1052,7 @@ function frame() {
     if (view.ref && charsReady()) {
       if (!refModel) {
         refModel = new CharModel('REF', 7);
+        refModel.group.add(blobShadow());
         scene.add(refModel.group);
       }
       refModel.group.position.set(view.ref.x, 0, view.ref.z);
@@ -970,7 +1079,7 @@ function frame() {
     }
 
     // camera (follows the INTERPOLATED body)
-    if (calibMode) { renderer.render(scene, camera); requestAnimationFrame(frame); return; }
+    if (calibMode) { draw(dtReal); requestAnimationFrame(frame); return; }
     const me = localMe;
     const mx = me ? myVisX : view.ball.x;
     const mz = me ? myVisZ : view.ball.z;
@@ -1019,8 +1128,22 @@ function frame() {
     }
   }
 
-  renderer.render(scene, camera);
+  // goal-moment lens punch (broadcast zoom kick), then settle back
+  if (fovPunch > 0.005) {
+    fovPunch *= Math.exp(-2.0 * dtReal);
+    camera.fov = BASE_FOV + 7 * Math.sin(fovPunch * Math.PI);
+    camera.updateProjectionMatrix();
+  } else if (camera.fov !== BASE_FOV) {
+    camera.fov = BASE_FOV;
+    camera.updateProjectionMatrix();
+  }
+
+  draw(dtReal);
   requestAnimationFrame(frame);
+}
+function draw(dt: number) {
+  if (composer) composer.render(dt);
+  else renderer.render(scene, camera);
 }
 const camTarget = new THREE.Vector3(0, 0, 0);
 const camPos = new THREE.Vector3(0, 10, 14);
@@ -1047,6 +1170,7 @@ let calibMode = false;
 
 function resize() {
   renderer.setSize(innerWidth, innerHeight);
+  composer?.setSize(innerWidth, innerHeight);
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
 }

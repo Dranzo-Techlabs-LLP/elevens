@@ -15,13 +15,18 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Fall back to the configured dev port when it's absent.
 const PORT = Number(process.env.PORT) || CONFIG.PORT;
 
-// Resolve the static dir for both layouts: running from source
-// (src/server -> ../../public) and from a bundled app.js at the app root
-// (./public). Pick whichever actually exists.
-const PUBLIC = [
+// Static roots in priority order, both layouts (running from source under
+// src/server/... and from a bundled app.js at the app root). dist-web is the
+// vite production build of the 3D client (play3d.html + hashed assets);
+// public/ keeps the legacy 2.5D game. First root that has the file wins, so
+// a production 3D build shadows the dev copies.
+const ROOTS = [
+  path.resolve(__dirname, 'dist-web'),
+  path.resolve(__dirname, '../../dist-web'),
   path.resolve(__dirname, 'public'),
   path.resolve(__dirname, '../../public'),
-].find((p) => fs.existsSync(p)) ?? path.resolve(__dirname, '../../public');
+].filter((p) => fs.existsSync(p));
+if (!ROOTS.length) ROOTS.push(path.resolve(__dirname, '../../public'));
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -30,23 +35,46 @@ const MIME: Record<string, string> = {
   '.css': 'text/css',
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
+  '.glb': 'model/gltf-binary',
+  '.wasm': 'application/wasm',
 };
 
 const server = http.createServer((req, res) => {
   const url = (req.url ?? '/').split('?')[0];
-  const file = path.join(PUBLIC, url === '/' ? 'index.html' : url);
-  if (!file.startsWith(PUBLIC)) {
+  // Decode, then hard-reject traversal BEFORE any path math. Node's HTTP
+  // parser passes literal '..' through (curl --path-as-is), and a bare
+  // startsWith prefix check can be fooled by a sibling dir sharing the
+  // root's name as a prefix — so check segments, and compare with a
+  // trailing separator.
+  let rel: string;
+  try {
+    rel = decodeURIComponent(url);
+  } catch {
+    res.writeHead(400);
+    return res.end();
+  }
+  rel = rel === '/' ? 'index.html' : rel.replace(/^\/+/, '');
+  if (rel.split(/[/\\]/).includes('..') || path.isAbsolute(rel)) {
     res.writeHead(403);
     return res.end();
   }
-  fs.readFile(file, (err, data) => {
-    if (err) {
+  const tryRoot = (i: number) => {
+    if (i >= ROOTS.length) {
       res.writeHead(404);
       return res.end('not found');
     }
-    res.writeHead(200, { 'content-type': MIME[path.extname(file)] ?? 'application/octet-stream' });
-    res.end(data);
-  });
+    const file = path.resolve(ROOTS[i], rel);
+    if (!file.startsWith(ROOTS[i] + path.sep)) {
+      res.writeHead(403);
+      return res.end();
+    }
+    fs.readFile(file, (err, data) => {
+      if (err) return tryRoot(i + 1);
+      res.writeHead(200, { 'content-type': MIME[path.extname(file)] ?? 'application/octet-stream' });
+      res.end(data);
+    });
+  };
+  tryRoot(0);
 });
 
 const wss = new WebSocketServer({ server });

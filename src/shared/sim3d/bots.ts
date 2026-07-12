@@ -46,6 +46,19 @@ export function botThink(match: Match, i: number): PlayerFullInput {
   const oppHasIt = ownerIdx >= 0 && match.meta[ownerIdx].team !== meta.team;
   const weHaveIt = ownerIdx >= 0 && match.meta[ownerIdx].team === meta.team;
 
+  // KICKOFF DISCIPLINE (real law): until the first touch puts the ball in
+  // play, only the restarting team may approach — and only their nearest
+  // man. Everyone else holds his kickoff spot. Kills the center scrum.
+  if (match.kickoffHold && !iHaveIt) {
+    if (meta.team !== match.kickoffTeam) return inp; // stand off the circle
+    let takerIdx = -1, td = Infinity;
+    for (const e of mates) {
+      const d = distBall(e.idx);
+      if (d < td) { td = d; takerIdx = e.idx; }
+    }
+    if (takerIdx !== i) return inp; // one taker, not five
+  }
+
   // roles
   let keeperIdx = -1, deep = Infinity;
   for (const e of mates) {

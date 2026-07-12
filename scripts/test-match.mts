@@ -417,5 +417,29 @@ const out: Record<string, unknown> = {};
   };
 }
 
+// 17. KICKOFF DISCIPLINE: only the kicking team's nearest man approaches;
+//     the opposition holds its half until the first touch releases the ball
+{
+  const { botThink } = await import('../src/shared/sim3d/bots');
+  const m = new Match(RAPIER, 30);
+  for (let n = 0; n < 5; n++) m.addPlayer(`bot-0-${n}`, `A${n}`, 0, true);
+  for (let n = 0; n < 5; n++) m.addPlayer(`bot-1-${n}`, `B${n}`, 1, true);
+  m.restart(180);
+  let oppCrossed = 0, releasedAt = -1;
+  for (let t = 0; t < 90; t++) {
+    for (let i = 0; i < 10; i++) m.setInput(i, botThink(m, i));
+    m.step();
+    if (m.kickoffHold) {
+      // team 1 defends +x: nobody may cross toward the ball early
+      for (let i = 5; i < 10; i++) if (m.players[i].pos.x < -0.3) oppCrossed++;
+    } else if (releasedAt < 0) releasedAt = t;
+  }
+  out.kickoffDiscipline = {
+    oppCrossedDuringHold: oppCrossed,
+    releasedAtTick: releasedAt,
+    ok: oppCrossed === 0 && releasedAt > 0 && releasedAt < 90,
+  };
+}
+
 console.log(JSON.stringify(out, null, 1));
 process.exit(0);
