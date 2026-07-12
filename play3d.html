@@ -4,102 +4,353 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>ELEVENS 3D</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Russo+One&display=swap" rel="stylesheet">
 <style>
+  :root {
+    --primary: #15803D;
+    --primary-soft: #16a34a;
+    --accent: #D97706;
+    --accent-hi: #f59e0b;
+    --bg: #0F172A;
+    --fg: #FFFFFF;
+    --muted: #94a3b8;
+    --panel: rgba(15, 23, 42, 0.82);
+    --glass: rgba(255, 255, 255, 0.06);
+    --border: rgba(255, 255, 255, 0.10);
+    --blue: #3b82f6;
+    --red: #ef4444;
+    --font-head: 'Russo One', system-ui, sans-serif;
+    --font-body: 'Chakra Petch', system-ui, sans-serif;
+  }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
-    height: 100%; overflow: hidden; background: #0c1f12;
-    font-family: system-ui, sans-serif;
+    height: 100%; overflow: hidden; background: var(--bg);
+    font-family: var(--font-body); color: var(--fg);
     touch-action: none; user-select: none; -webkit-user-select: none;
   }
   canvas { display: block; position: fixed; inset: 0; }
+  button { font-family: var(--font-body); cursor: pointer; }
+
+  /* ---------- overlays ---------- */
   .overlay {
     position: fixed; inset: 0; z-index: 10;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    gap: 14px; background: rgba(6, 24, 12, 0.9); color: #fff; text-align: center; padding: 20px;
+    gap: 18px; padding: 24px; text-align: center;
+    background:
+      radial-gradient(1200px 500px at 50% -10%, rgba(21, 128, 61, 0.28), transparent 60%),
+      linear-gradient(180deg, rgba(8, 13, 26, 0.94), rgba(10, 16, 30, 0.97));
+    backdrop-filter: blur(6px);
   }
   .hidden { display: none !important; }
-  h1 { font-size: 40px; letter-spacing: 6px; }
-  input { font-size: 18px; padding: 10px 14px; border: none; border-radius: 8px; width: 220px; text-align: center; }
-  #code { text-transform: uppercase; width: 120px; }
-  button { font-size: 17px; font-weight: 700; padding: 12px 24px; border: none; border-radius: 10px; background: #22c55e; color: #052e16; cursor: pointer; }
-  .row { display: flex; gap: 8px; align-items: center; }
-  .err { color: #fca5a5; min-height: 1.2em; font-size: 14px; }
-  .muted { color: #9fc4aa; font-size: 13px; }
-  .teams { display: flex; gap: 40px; }
-  .teams h3 { margin-bottom: 6px; }
-  .teams .A h3 { color: #60a5fa; } .teams .B h3 { color: #f87171; }
-  .teams li { list-style: none; font-size: 15px; padding: 2px 0; }
-  .card { background: rgba(255,255,255,0.07); border-radius: 12px; padding: 12px 18px; max-width: 480px; font-size: 14px; line-height: 1.55; text-align: left; }
-  kbd { background: rgba(255,255,255,0.16); border-radius: 4px; padding: 1px 6px; font-size: 12px; }
 
-  #hud { position: fixed; top: max(8px, env(safe-area-inset-top)); left: 0; right: 0; text-align: center; color: #fff; z-index: 4; pointer-events: none; text-shadow: 0 1px 6px rgba(0,0,0,0.6); }
-  #hud-score { font-size: 22px; font-weight: 800; }
-  #hud .sub { font-size: 12px; color: rgba(255,255,255,0.75); }
-  #stam-wrap { position: fixed; bottom: max(12px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); width: 140px; height: 8px; background: rgba(0,0,0,0.4); border-radius: 4px; z-index: 4; }
-  #stam { height: 100%; width: 100%; background: #4ade80; border-radius: 4px; }
+  .wordmark {
+    font-family: var(--font-head);
+    font-size: clamp(44px, 9vw, 72px);
+    letter-spacing: 0.08em;
+    line-height: 1;
+    background: linear-gradient(180deg, #fff 55%, #86efac);
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-shadow: 0 12px 40px rgba(21, 128, 61, 0.35);
+  }
+  .wordmark em { font-style: normal; color: var(--accent-hi); -webkit-text-fill-color: var(--accent-hi); }
+  .tagline {
+    font-size: 13px; font-weight: 500; letter-spacing: 0.28em;
+    text-transform: uppercase; color: var(--muted);
+  }
 
-  #banner { position: fixed; top: 20%; left: 0; right: 0; text-align: center; font-size: 44px; font-weight: 900; color: #fff; text-shadow: 0 2px 12px rgba(0,0,0,0.6); z-index: 5; pointer-events: none; opacity: 0; transition: opacity 0.25s; }
-  #banner.show { opacity: 1; }
-  #hint { position: fixed; bottom: 17%; left: 50%; transform: translateX(-50%); max-width: 92vw; padding: 9px 16px; border-radius: 18px; background: rgba(0,0,0,0.55); color: #fff; font-size: 14px; font-weight: 600; z-index: 5; pointer-events: none; opacity: 0; transition: opacity 0.3s; text-align: center; }
+  .card {
+    width: min(420px, 92vw);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 22px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .field { display: flex; flex-direction: column; gap: 6px; text-align: left; }
+  .field label { font-size: 11px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
+  input {
+    font-family: var(--font-body); font-size: 17px; font-weight: 600;
+    color: var(--fg); background: var(--glass);
+    border: 1px solid var(--border); border-radius: 10px;
+    padding: 13px 14px; outline: none; width: 100%;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  input:focus { border-color: var(--primary-soft); box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.25); }
+  input::placeholder { color: #5b6b82; font-weight: 400; }
+  #code { text-transform: uppercase; letter-spacing: 0.3em; text-align: center; }
+
+  .btn {
+    border: none; border-radius: 12px;
+    font-size: 16px; font-weight: 700; letter-spacing: 0.04em;
+    padding: 14px 22px; color: #071108;
+    background: linear-gradient(180deg, var(--accent-hi), var(--accent));
+    box-shadow: 0 10px 24px rgba(217, 119, 6, 0.35), inset 0 1px 0 rgba(255,255,255,0.35);
+    transition: transform 0.15s, box-shadow 0.2s, filter 0.2s;
+  }
+  .btn:hover { filter: brightness(1.06); box-shadow: 0 14px 30px rgba(217, 119, 6, 0.45), inset 0 1px 0 rgba(255,255,255,0.35); }
+  .btn:active { transform: scale(0.97); }
+  .btn.green {
+    color: #fff;
+    background: linear-gradient(180deg, var(--primary-soft), var(--primary));
+    box-shadow: 0 10px 24px rgba(21, 128, 61, 0.4), inset 0 1px 0 rgba(255,255,255,0.22);
+  }
+  .btn.ghost {
+    background: var(--glass); color: var(--fg);
+    border: 1px solid var(--border); box-shadow: none;
+  }
+  .join-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
+  .err { color: #fca5a5; min-height: 1.2em; font-size: 13px; font-weight: 500; }
+
+  .controls-card {
+    width: min(420px, 92vw);
+    background: rgba(10, 16, 30, 0.6);
+    border: 1px solid var(--border); border-radius: 14px;
+    padding: 14px 18px; font-size: 13px; line-height: 2;
+    color: #c7d4e6; text-align: left;
+  }
+  .controls-card b { color: #fff; font-weight: 600; }
+  kbd {
+    display: inline-block; min-width: 22px; text-align: center;
+    background: linear-gradient(180deg, #2a3850, #1c2740);
+    border: 1px solid rgba(255,255,255,0.14); border-bottom-width: 2px;
+    border-radius: 5px; padding: 1px 6px;
+    font-family: var(--font-body); font-size: 11px; font-weight: 700; color: #e2e8f0;
+  }
+
+  /* ---------- lobby ---------- */
+  .room-ticket {
+    display: flex; align-items: baseline; gap: 12px;
+    font-family: var(--font-head); font-size: 20px; letter-spacing: 0.1em;
+  }
+  .room-ticket .code {
+    font-size: 38px; letter-spacing: 0.28em; color: var(--accent-hi);
+    text-shadow: 0 6px 24px rgba(245, 158, 11, 0.4);
+  }
+  .teams { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; width: min(520px, 92vw); }
+  .team-panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; overflow: hidden; text-align: left;
+  }
+  .team-panel h3 {
+    font-family: var(--font-head); font-size: 14px; letter-spacing: 0.12em;
+    padding: 10px 14px; color: #fff;
+  }
+  .team-panel.A h3 { background: linear-gradient(90deg, rgba(59,130,246,0.85), rgba(59,130,246,0.25)); }
+  .team-panel.B h3 { background: linear-gradient(90deg, rgba(239,68,68,0.85), rgba(239,68,68,0.25)); }
+  .team-panel ul { list-style: none; padding: 8px 0; min-height: 90px; }
+  .team-panel li {
+    padding: 7px 14px; font-size: 14px; font-weight: 600;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .team-panel li::before {
+    content: ''; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--primary-soft); flex: none;
+  }
+  .muted { color: var(--muted); font-size: 13px; }
+
+  /* ---------- broadcast scoreboard ---------- */
+  #hud { position: fixed; inset: 0; z-index: 4; pointer-events: none; }
+  #scorebug {
+    position: absolute;
+    top: max(12px, env(safe-area-inset-top));
+    left: max(14px, env(safe-area-inset-left));
+    display: flex; align-items: stretch;
+    border-radius: 10px; overflow: hidden;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+    font-family: var(--font-head);
+    backdrop-filter: blur(6px);
+  }
+  #scorebug .brand {
+    background: linear-gradient(180deg, var(--primary-soft), var(--primary));
+    color: #fff; font-size: 13px; letter-spacing: 0.08em;
+    display: flex; align-items: center; padding: 0 12px;
+  }
+  #scorebug .team {
+    display: flex; align-items: center; gap: 8px;
+    background: rgba(10, 16, 30, 0.88);
+    padding: 0 12px; font-size: 15px; color: #fff;
+  }
+  #scorebug .team .dot { width: 10px; height: 10px; border-radius: 2px; }
+  #scorebug .team.a .dot { background: var(--blue); }
+  #scorebug .team.b .dot { background: var(--red); }
+  #scorebug .score {
+    background: rgba(4, 8, 18, 0.92); color: #fff;
+    display: flex; align-items: center; padding: 0 14px;
+    font-size: 20px; letter-spacing: 0.1em;
+    font-variant-numeric: tabular-nums;
+  }
+  #scorebug .clock {
+    background: linear-gradient(180deg, var(--accent-hi), var(--accent));
+    color: #14100a; display: flex; align-items: center;
+    padding: 0 12px; font-size: 16px;
+    font-variant-numeric: tabular-nums;
+  }
+  #scorebug > div { height: 40px; }
+
+  #match-meta {
+    position: absolute;
+    bottom: max(10px, env(safe-area-inset-bottom));
+    right: max(14px, env(safe-area-inset-right));
+    font-size: 11px; font-weight: 600; letter-spacing: 0.14em;
+    text-transform: uppercase; color: rgba(255,255,255,0.65);
+    background: rgba(10, 16, 30, 0.55);
+    border: 1px solid var(--border);
+    padding: 6px 10px; border-radius: 8px;
+    backdrop-filter: blur(4px);
+  }
+
+  #stam-wrap {
+    position: absolute;
+    bottom: max(12px, env(safe-area-inset-bottom));
+    left: 50%; transform: translateX(-50%);
+    width: 180px; height: 10px;
+    background: rgba(4, 8, 18, 0.65);
+    border: 1px solid var(--border);
+    border-radius: 6px; overflow: hidden;
+  }
+  #stam {
+    height: 100%; width: 100%;
+    background: linear-gradient(90deg, var(--primary-soft), #4ade80);
+    transition: width 0.2s linear;
+  }
+  #stam.low { background: linear-gradient(90deg, #dc2626, #f87171); }
+
+  /* ---------- banner (broadcast lower third) ---------- */
+  #banner {
+    position: fixed; top: 22%; left: 50%;
+    transform: translateX(-50%) skewX(-8deg);
+    z-index: 5; pointer-events: none;
+    font-family: var(--font-head);
+    font-size: clamp(30px, 6vw, 52px);
+    letter-spacing: 0.1em; color: #fff;
+    background: linear-gradient(90deg, transparent, rgba(21, 128, 61, 0.92) 12%, rgba(21, 128, 61, 0.92) 88%, transparent);
+    padding: 10px 70px;
+    opacity: 0; transition: opacity 0.22s, transform 0.25s;
+    text-shadow: 0 4px 18px rgba(0,0,0,0.5);
+  }
+  #banner.show { opacity: 1; transform: translateX(-50%) skewX(-8deg) scale(1.02); }
+
+  #hint {
+    position: fixed; bottom: 18%; left: 50%; transform: translateX(-50%);
+    max-width: 92vw; padding: 10px 20px; border-radius: 10px;
+    background: rgba(10, 16, 30, 0.85);
+    border: 1px solid var(--border);
+    color: #dbe7f5; font-size: 14px; font-weight: 600;
+    z-index: 5; pointer-events: none; opacity: 0; transition: opacity 0.3s;
+    text-align: center; backdrop-filter: blur(4px);
+  }
   #hint.show { opacity: 1; }
 
-  #actions { position: fixed; right: max(12px, env(safe-area-inset-right)); bottom: max(16px, env(safe-area-inset-bottom)); width: 230px; height: 230px; z-index: 6; pointer-events: none; }
-  .abtn { position: absolute; border-radius: 50%; color: #fff; font-weight: 800; display: flex; align-items: center; justify-content: center; pointer-events: auto; border: 2px solid rgba(255,255,255,0.5); text-shadow: 0 1px 3px rgba(0,0,0,0.5); -webkit-tap-highlight-color: transparent; }
-  .abtn.held { filter: brightness(1.45); transform: scale(0.94); }
-  #b-shoot { width: 76px; height: 76px; right: 0; top: 6px; background: rgba(220,38,38,0.55); font-size: 14px; }
-  #b-pass { width: 72px; height: 72px; right: 10px; bottom: 0; background: rgba(34,197,94,0.55); font-size: 13px; }
-  #b-thru { width: 58px; height: 58px; left: 34px; top: 0; background: rgba(168,85,247,0.55); font-size: 12px; }
-  #b-lob { width: 56px; height: 56px; left: 0; top: 66px; background: rgba(59,130,246,0.55); font-size: 12px; }
-  #b-tackle { width: 60px; height: 60px; left: 16px; bottom: 4px; background: rgba(245,158,11,0.6); font-size: 11px; }
-  #b-sprint { width: 54px; height: 54px; right: 96px; bottom: 44px; background: rgba(255,255,255,0.28); font-size: 10px; }
+  /* ---------- end screen ---------- */
+  #result {
+    font-family: var(--font-head);
+    font-size: clamp(40px, 8vw, 64px); letter-spacing: 0.06em;
+    background: linear-gradient(180deg, #fff, #86efac);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  #final-score { font-family: var(--font-head); font-size: 24px; letter-spacing: 0.12em; color: #e2e8f0; }
+
+  /* ---------- touch controls ---------- */
+  #actions {
+    position: fixed;
+    right: max(12px, env(safe-area-inset-right));
+    bottom: max(16px, env(safe-area-inset-bottom));
+    width: 230px; height: 230px; z-index: 6; pointer-events: none;
+  }
+  .abtn {
+    position: absolute; border-radius: 50%;
+    color: #fff; font-family: var(--font-head); letter-spacing: 0.05em;
+    display: flex; align-items: center; justify-content: center;
+    pointer-events: auto; -webkit-tap-highlight-color: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    backdrop-filter: blur(6px);
+    box-shadow: 0 8px 20px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.25);
+    transition: transform 0.12s, filter 0.12s;
+  }
+  .abtn.held { filter: brightness(1.5); transform: scale(0.93); }
+  #b-shoot { width: 78px; height: 78px; right: 0; top: 4px; background: radial-gradient(circle at 35% 30%, rgba(248,113,113,0.9), rgba(153,27,27,0.85)); font-size: 13px; }
+  #b-pass { width: 74px; height: 74px; right: 8px; bottom: 0; background: radial-gradient(circle at 35% 30%, rgba(74,222,128,0.9), rgba(21,93,48,0.85)); font-size: 12px; }
+  #b-thru { width: 58px; height: 58px; left: 34px; top: 0; background: radial-gradient(circle at 35% 30%, rgba(216,180,254,0.9), rgba(107,33,168,0.85)); font-size: 11px; }
+  #b-lob { width: 56px; height: 56px; left: 0; top: 64px; background: radial-gradient(circle at 35% 30%, rgba(147,197,253,0.9), rgba(29,78,216,0.85)); font-size: 11px; }
+  #b-tackle { width: 60px; height: 60px; left: 14px; bottom: 2px; background: radial-gradient(circle at 35% 30%, rgba(253,186,116,0.92), rgba(180,83,9,0.88)); font-size: 10px; }
+  #b-sprint { width: 54px; height: 54px; right: 94px; bottom: 42px; background: radial-gradient(circle at 35% 30%, rgba(226,232,240,0.5), rgba(71,85,105,0.6)); font-size: 10px; }
+
   #joy-base, #joy-knob { position: fixed; top: 0; left: 0; border-radius: 50%; pointer-events: none; z-index: 5; }
-  #joy-base { width: 104px; height: 104px; border: 2px solid rgba(255,255,255,0.45); }
-  #joy-knob { width: 44px; height: 44px; background: rgba(255,255,255,0.4); }
+  #joy-base { width: 104px; height: 104px; border: 2px solid rgba(255,255,255,0.35); background: rgba(255,255,255,0.04); }
+  #joy-knob { width: 44px; height: 44px; background: rgba(255,255,255,0.45); box-shadow: 0 4px 14px rgba(0,0,0,0.4); }
+
+  #vignette { position: fixed; inset: 0; z-index: 3; pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 58%, rgba(4, 10, 6, 0.42) 100%); }
 </style>
 </head>
 <body>
 <canvas id="game"></canvas>
-<div id="vignette" style="position:fixed;inset:0;z-index:3;pointer-events:none;background:radial-gradient(ellipse at center, transparent 58%, rgba(6,14,8,0.38) 100%)"></div>
+<div id="vignette"></div>
 
+<!-- ================= MENU ================= -->
 <div id="menu" class="overlay">
-  <h1>ELEVENS 3D</h1>
-  <p class="muted">5v5 · real physics · Rapier authoritative server</p>
-  <input id="name" placeholder="Your name" maxlength="12" autocomplete="off">
-  <button id="create">Create room</button>
-  <div class="row"><input id="code" placeholder="CODE" maxlength="4"><button id="join">Join</button></div>
-  <div class="card">
-    <b>Move</b> <kbd>WASD</kbd> · <b>Sprint</b> <kbd>SHIFT</kbd> · <b>Shield/Jockey</b> <kbd>E</kbd><br>
-    <b>Pass</b> <kbd>SPACE</kbd>/<kbd>J</kbd> · <b>Through</b> <kbd>I</kbd> · <b>Shoot</b> hold <kbd>K</kbd> · <b>Lob</b> <kbd>L</kbd><br>
-    <b>Tackle</b> <kbd>V</kbd> · <b>Slide</b> <kbd>N</kbd> (foul risk!) · <b>Camera</b> <kbd>C</kbd>
+  <div>
+    <div class="wordmark">ELEVENS<em>·3D</em></div>
+    <div class="tagline">5v5 · Rapier physics · every player is human</div>
   </div>
-  <p id="menu-err" class="err"></p>
+  <div class="card">
+    <div class="field">
+      <label for="name">Player name</label>
+      <input id="name" placeholder="Enter your name" maxlength="12" autocomplete="off">
+    </div>
+    <button id="create" class="btn">CREATE MATCH</button>
+    <div class="join-row">
+      <input id="code" placeholder="CODE" maxlength="4" autocomplete="off">
+      <button id="join" class="btn green">JOIN</button>
+    </div>
+    <p id="menu-err" class="err"></p>
+  </div>
+  <div class="controls-card">
+    <b>Move</b> <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> &nbsp;·&nbsp; <b>Sprint</b> <kbd>SHIFT</kbd> &nbsp;·&nbsp; <b>Shield</b> <kbd>E</kbd><br>
+    <b>Pass</b> <kbd>SPACE</kbd> &nbsp;·&nbsp; <b>Through</b> <kbd>I</kbd> &nbsp;·&nbsp; <b>Shoot</b> hold <kbd>K</kbd> &nbsp;·&nbsp; <b>Lob</b> <kbd>L</kbd><br>
+    <b>Tackle</b> <kbd>V</kbd> &nbsp;·&nbsp; <b>Slide</b> <kbd>N</kbd> &nbsp;·&nbsp; <b>Camera</b> <kbd>C</kbd>
+  </div>
 </div>
 
+<!-- ================= LOBBY ================= -->
 <div id="lobby" class="overlay hidden">
-  <h2>Room <span id="room-code" style="letter-spacing:4px"></span></h2>
-  <p class="muted">Empty slots become bots at kickoff (5v5).</p>
+  <div class="room-ticket">ROOM <span class="code" id="room-code"></span></div>
+  <p class="muted">Share the code — empty slots become bots at kickoff</p>
   <div class="teams">
-    <div class="A"><h3>Team A</h3><ul id="teamA"></ul></div>
-    <div class="B"><h3>Team B</h3><ul id="teamB"></ul></div>
+    <div class="team-panel A"><h3>TEAM BLUE</h3><ul id="teamA"></ul></div>
+    <div class="team-panel B"><h3>TEAM RED</h3><ul id="teamB"></ul></div>
   </div>
-  <button id="start" class="hidden">Start match</button>
+  <button id="start" class="btn hidden">START MATCH</button>
   <p id="wait-host" class="muted">Waiting for host…</p>
 </div>
 
+<!-- ================= END ================= -->
 <div id="end" class="overlay hidden">
-  <h2 id="result"></h2>
-  <p id="final-score" style="font-size:20px"></p>
-  <button id="rematch">Rematch</button>
+  <div id="result"></div>
+  <div id="final-score"></div>
+  <button id="rematch" class="btn">REMATCH</button>
 </div>
 
+<!-- ================= HUD ================= -->
 <div id="hud" class="hidden">
-  <div id="hud-score"></div>
-  <div class="sub"><span id="hud-room"></span></div>
+  <div id="scorebug">
+    <div class="brand">ELV</div>
+    <div class="team a"><span class="dot"></span>BLU</div>
+    <div class="score"><span id="sb-a">0</span>&nbsp;–&nbsp;<span id="sb-b">0</span></div>
+    <div class="team b"><span class="dot"></span>RED</div>
+    <div class="clock" id="sb-clock">3:00</div>
+  </div>
+  <div id="match-meta"><span id="hud-room"></span></div>
 </div>
 <div id="stam-wrap" class="hidden"><div id="stam"></div></div>
 <div id="banner"></div>
 <div id="hint"></div>
 
+<!-- ================= TOUCH ================= -->
 <div id="actions" class="hidden">
   <div id="b-shoot" class="abtn ui">SHOOT</div>
   <div id="b-pass" class="abtn ui">PASS</div>

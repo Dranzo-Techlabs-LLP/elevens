@@ -811,11 +811,17 @@ function frame() {
       if (!seen.has(id)) { scene.remove(m.rig.group); models.delete(id); }
     }
 
-    // HUD
+    // HUD — broadcast scorebug
     const t = Math.max(0, view.latest.timeLeft);
-    $('hud-score').textContent = `${view.latest.score[0]}  —  ${view.latest.score[1]}    ${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+    $('sb-a').textContent = String(view.latest.score[0]);
+    $('sb-b').textContent = String(view.latest.score[1]);
+    $('sb-clock').textContent = `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
     const meSnap = view.latest.players.find((p) => p.id === myId);
-    if (meSnap) ($('stam') as HTMLElement).style.width = `${Math.round(meSnap.stamina * 100)}%`;
+    if (meSnap) {
+      const st = $('stam') as HTMLElement;
+      st.style.width = `${Math.round(meSnap.stamina * 100)}%`;
+      st.classList.toggle('low', meSnap.stamina < 0.3);
+    }
 
     // camera (follows the INTERPOLATED body)
     if (calibMode) { renderer.render(scene, camera); requestAnimationFrame(frame); return; }
