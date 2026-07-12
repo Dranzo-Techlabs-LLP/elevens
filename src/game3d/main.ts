@@ -745,6 +745,7 @@ function onMsg(m: any) {
       if (m.kind === 'kickoff') { winner = null; banner('KICKOFF', 900); }
       if (m.kind === 'end') winner = m.winner;
       if (m.kind === 'foul') banner('FOUL!', 1000);
+      if (m.kind === 'restart') banner(m.what === 'throwin' ? 'THROW-IN' : 'GOAL KICK', 1000);
       if (m.kind === 'kick' && m.id) {
         const mdl = models.get(m.id);
         if (mdl && 'triggerKick' in mdl.rig) (mdl.rig as any).triggerKick();

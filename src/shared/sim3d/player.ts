@@ -14,7 +14,12 @@
 //     tired player loses top speed (control penalties consumed in M3).
 // ============================================================
 import type RAPIER from '@dimforge/rapier3d-compat';
-import { PLAYER } from '../config3d';
+import { PITCH_5S, PLAYER } from '../config3d';
+
+// players never leave the field of play — no running through the goal mouth
+// into the net, no being shoved through the boards by a scrum
+const BOUND_X = PITCH_5S.length / 2 - PLAYER.capsuleRadius * 0.9;
+const BOUND_Z = PITCH_5S.width / 2 - PLAYER.capsuleRadius * 0.9;
 
 export interface MoveInput {
   x: number; // desired direction, world space (not necessarily unit)
@@ -190,9 +195,9 @@ export class SimPlayer {
     const m = this.controller.computedMovement();
     const p = this.body.translation();
     this.body.setNextKinematicTranslation({
-      x: p.x + m.x,
+      x: clamp(p.x + m.x, -BOUND_X, BOUND_X),
       y: PLAYER.height / 2,
-      z: p.z + m.z,
+      z: clamp(p.z + m.z, -BOUND_Z, BOUND_Z),
     });
   }
 }

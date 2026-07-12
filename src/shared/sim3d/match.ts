@@ -252,8 +252,19 @@ export class Match {
               const nl = Math.hypot(nx, nz);
               nx /= nl; nz /= nl;
             }
-            this.players[i].body.setTranslation({ x: a.x - nx * push * 1.6, y: a.y, z: a.z - nz * push * 1.6 }, true);
-            this.players[j].body.setTranslation({ x: b.x + nx * push * 1.6, y: b.y, z: b.z + nz * push * 1.6 }, true);
+            // clamp to the field — direct setTranslation bypasses walls, so a
+            // scrum against the boards must never tunnel players outside
+            const BX = L / 2 - PLAYER.capsuleRadius * 0.9;
+            const BZ = W / 2 - PLAYER.capsuleRadius * 0.9;
+            const cl = (v: number, b2: number) => Math.max(-b2, Math.min(b2, v));
+            this.players[i].body.setTranslation(
+              { x: cl(a.x - nx * push * 1.6, BX), y: a.y, z: cl(a.z - nz * push * 1.6, BZ) },
+              true,
+            );
+            this.players[j].body.setTranslation(
+              { x: cl(b.x + nx * push * 1.6, BX), y: b.y, z: cl(b.z + nz * push * 1.6, BZ) },
+              true,
+            );
           }
         }
       }
@@ -314,6 +325,26 @@ export class Match {
       }
       this.prevBall = { x: bp.x, y: bp.y, z: bp.z };
 
+      // OUT OF PLAY: lofted balls clear the 1m boards or the crossbar and
+      // land where nobody can reach (players never leave the field). Natural
+      // restart instead of a dead ball:
+      //  - over a side board  -> throw-in at the boundary point
+      //  - behind a goal line without a goal -> goal kick from the 6-yard box
+      if (this.phase === 'playing') {
+        const OUT = 0.4;
+        if (Math.abs(bp.z) > W / 2 + OUT) {
+          this.restartBall(
+            Math.max(-L / 2 + 2, Math.min(L / 2 - 2, bp.x)),
+            Math.sign(bp.z) * (W / 2 - 0.8),
+            'throwin',
+          );
+        } else if (Math.abs(bp.x) > L / 2 + OUT) {
+          // crossed the end line and the crossing detector above didn't award
+          // a goal (over the bar / wide behind the frame)
+          this.restartBall(Math.sign(bp.x) * (L / 2 - 3), 0, 'goalkick');
+        }
+      }
+
       this.timeLeft -= dt;
       if (this.timeLeft <= 0 && this.phase === 'playing') {
         this.phase = 'ended';
@@ -324,6 +355,17 @@ export class Match {
     }
 
     return this.events;
+  }
+
+  /** dead-ball restart: place the ball, kill motion, release possession */
+  private restartBall(x: number, z: number, kind: 'throwin' | 'goalkick') {
+    this.ball.setTranslation({ x, y: BALL.radius, z }, true);
+    this.ball.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    this.ball.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    this.prevBall = { x, y: BALL.radius, z };
+    this.poss = { owner: -1, ownerSince: this.tick };
+    for (const s of this.ctlStates) s.cooldown = 0;
+    this.events.push({ kind: 'kick', playerIndex: -1, detail: kind });
   }
 
   private goal(team: 0 | 1) {

@@ -242,5 +242,63 @@ const out: Record<string, unknown> = {};
   out.shieldBlocksPoke = { sepAfter: +dBehind.toFixed(2), kept: dBehind < 1.0 && m.poss.owner === 0 };
 }
 
+// 12. FIELD BOUNDS: nobody leaves the pitch — not through the goal mouth,
+//     not shoved through the boards by a scrum
+{
+  const m = new Match(RAPIER, 30);
+  m.addPlayer('a', 'A', 0, false);
+  m.addPlayer('b', 'B', 1, false);
+  m.restart(180);
+  // A tries to run straight through the goal mouth; B grinds A against the board
+  m.players[0].body.setTranslation({ x: 18, y: 0.91, z: 0 }, true);
+  m.players[1].body.setTranslation({ x: 0, y: 0.91, z: 9.4 }, true);
+  m.ball.setTranslation({ x: 0, y: 0.11, z: -8 }, true);
+  for (let t = 0; t < 120; t++) {
+    const ia = idleFullInput(); ia.mx = 1; ia.sprint = true;   // through the mouth
+    const ib = idleFullInput(); ib.mz = 1; ib.sprint = true;   // into the board
+    m.setInput(0, ia);
+    m.setInput(1, ib);
+    m.step();
+  }
+  const pa = m.players[0].pos;
+  const pb2 = m.players[1].pos;
+  out.fieldBounds = {
+    aX: +pa.x.toFixed(2),
+    bZ: +pb2.z.toFixed(2),
+    inside: pa.x <= 20 - 0.25 && Math.abs(pb2.z) <= 10 - 0.25,
+  };
+}
+
+// 13. OUT OF PLAY: lob over the side board -> throw-in; ball behind the
+//     goal (over the bar) -> goal kick. Never a dead unreachable ball.
+{
+  const m = new Match(RAPIER, 30);
+  m.addPlayer('a', 'A', 0, false);
+  m.restart(180);
+  // fire the ball over the side board
+  m.ball.setTranslation({ x: 0, y: 0.11, z: 5 }, true);
+  m.ball.setLinvel({ x: 0, y: 9, z: 12 }, true);
+  let restarted = '';
+  for (let t = 0; t < 120 && !restarted; t++) {
+    m.setInput(0, idleFullInput());
+    const ev = m.step();
+    for (const e of ev) if (e.detail === 'throwin' || e.detail === 'goalkick') restarted = e.detail;
+  }
+  const b1 = m.ball.translation();
+  out.throwIn = { kind: restarted, ballBack: Math.abs(b1.z) < 10 && Math.abs(b1.x) < 20 };
+
+  // fire the ball over the crossbar, behind the goal
+  m.ball.setTranslation({ x: 15, y: 0.11, z: 0 }, true);
+  m.ball.setLinvel({ x: 16, y: 10, z: 0 }, true);
+  restarted = '';
+  for (let t = 0; t < 150 && !restarted; t++) {
+    m.setInput(0, idleFullInput());
+    const ev = m.step();
+    for (const e of ev) if (e.detail === 'throwin' || e.detail === 'goalkick') restarted = e.detail;
+  }
+  const b2 = m.ball.translation();
+  out.goalKick = { kind: restarted, score: m.score, ballBack: Math.abs(b2.x) < 20 };
+}
+
 console.log(JSON.stringify(out, null, 1));
 process.exit(0);

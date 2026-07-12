@@ -213,6 +213,8 @@ export class Room3D {
         this.broadcast({ type: 'e3', kind: 'end', winner: a > b ? 'A' : b > a ? 'B' : 'draw', score: snap.score });
       } else if (ev.detail === 'kickoff') {
         this.broadcast({ type: 'e3', kind: 'kickoff' });
+      } else if (ev.detail === 'throwin' || ev.detail === 'goalkick') {
+        this.broadcast({ type: 'e3', kind: 'restart', what: ev.detail });
       } else if (ev.kind === 'foul') {
         this.broadcast({ type: 'e3', kind: 'foul', id: this.match.meta[ev.playerIndex]?.id });
       } else if (ev.kind === 'kick') {
