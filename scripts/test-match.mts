@@ -460,14 +460,35 @@ const out: Record<string, unknown> = {};
     for (const e of m.step()) if (e.detail === 'throwin') ev = e.detail;
   }
   const rs = m.restartState;
+  // ball must be IN THE TAKER'S HANDS overhead during the ceremony
+  for (let t = 0; t < 5; t++) { m.setInput(0, idleFullInput()); m.setInput(1, idleFullInput()); m.step(); }
   const bp = m.ball.translation();
+  const inHands = bp.y > 1.6;
+  // then the taker throws (pass verb becomes the two-handed release)
+  let thrown = false, releaseSpeed = 0;
+  const taker = rs?.taker ?? -1;
+  for (let t = 0; t < 120 && !thrown; t++) {
+    const it = idleFullInput();
+    if (m.restartState && m.tick >= m.restartState.readyTick) it.pass = t % 8 < 4;
+    m.setInput(taker, it);
+    m.setInput(1 - taker, idleFullInput());
+    for (const e of m.step()) {
+      if (e.detail === 'throw') {
+        thrown = true;
+        const v = m.ball.linvel();
+        releaseSpeed = Math.hypot(v.x, v.z);
+      }
+    }
+  }
   out.throwInLaw = {
     lastTouchWas: touched,
     event: ev,
     awardedTo: rs?.team,
     takerTeam: rs ? m.meta[rs.taker].team : -1,
-    ballOnLine: +Math.abs(bp.z).toFixed(2),
-    ok: ev === 'throwin' && touched === 0 && rs?.team === 1 && Math.abs(Math.abs(bp.z) - 9.7) < 0.4,
+    ballInHands: inHands,
+    thrown,
+    releaseSpeed: +releaseSpeed.toFixed(1),
+    ok: ev === 'throwin' && touched === 0 && rs?.team === 1 && inHands && thrown && releaseSpeed <= 10.6,
   };
 }
 

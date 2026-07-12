@@ -70,6 +70,9 @@ export interface MatchEvent {
   kind: 'kick' | 'foul' | 'tackle' | 'slide' | 'save';
   playerIndex: number;
   detail?: string;
+  /** save events: dive side relative to the keeper's facing (-1 left,
+   *  +1 right, 0 standing catch) */
+  side?: number;
 }
 
 const KICK_RANGE = 1.9; // m from feet at the contact frame — generous enough
@@ -96,6 +99,9 @@ export interface ActionCtx {
   /** index of a keeper holding the ball in his hands (-1 none): he cannot
    *  be tackled — the laws protect a keeper in control with his hands */
   holdIdx?: number;
+  /** player carrying the ball IN HAND (keeper hold / throw-in taker): for
+   *  him the ball is playable at hand height — his punt/throw must fire */
+  handHeldBy?: number;
 }
 
 export function stepActions(ctx: ActionCtx, inputs: ActionInput[]) {
@@ -112,7 +118,7 @@ export function stepActions(ctx: ActionCtx, inputs: ActionInput[]) {
     const dx = bp.x - pl.pos.x;
     const dz = bp.z - pl.pos.z;
     const distToBall = Math.hypot(dx, dz);
-    const ballPlayable = bp.y < TOUCH.ballMaxHeight + 0.4;
+    const ballPlayable = bp.y < TOUCH.ballMaxHeight + 0.4 || i === ctx.handHeldBy;
 
     const mayPlay = ctx.canPlay ? ctx.canPlay(i) : true;
 

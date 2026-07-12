@@ -216,7 +216,9 @@ export class Room3D {
       } else if (ev.detail === 'throwin' || ev.detail === 'goalkick' || ev.detail === 'corner' || ev.detail === 'penalty') {
         this.broadcast({ type: 'e3', kind: 'restart', what: ev.detail, id: this.match.meta[ev.playerIndex]?.id });
       } else if (ev.kind === 'save') {
-        this.broadcast({ type: 'e3', kind: 'save', id: this.match.meta[ev.playerIndex]?.id, how: ev.detail });
+        this.broadcast({ type: 'e3', kind: 'save', id: this.match.meta[ev.playerIndex]?.id, how: ev.detail, side: ev.side ?? 0 });
+      } else if (ev.detail === 'throw') {
+        this.broadcast({ type: 'e3', kind: 'throw', id: this.match.meta[ev.playerIndex]?.id });
       } else if (ev.detail === 'freekick' || ev.detail === 'advantage') {
         this.broadcast({
           type: 'e3',

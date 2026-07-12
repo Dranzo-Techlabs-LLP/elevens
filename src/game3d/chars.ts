@@ -156,9 +156,14 @@ export class CharModel {
   private handL: THREE.Object3D | null = null;
   private cardMesh: THREE.Mesh | null = null;
   private cardT = 0;
-  // keeper: both-arms burst (save/throw) + smoothed cradle while holding
+  // keeper: both-arms burst + smoothed cradle while holding
   private armsT = 0;
   private cradle = 0;
+  // keeper dive: full-body lateral stretch toward diveSide
+  private diveT = 0;
+  private diveSide = 1;
+  // throw-in: two-handed overhead throw (raise -> snap forward)
+  private throwT = 0;
 
   constructor(team: KitTeam, seed = 0) {
     const model = skeletonClone(gltf!.scene);
@@ -222,9 +227,20 @@ export class CharModel {
     this.kickT = 1;
   }
 
-  /** keeper save / throw-in: both arms thrown up for ~0.8s */
+  /** keeper save / celebration: both arms thrown up for ~0.8s */
   triggerArms() {
     this.armsT = 0.8;
+  }
+
+  /** keeper dive: full-body stretch to his left (-1) or right (+1) */
+  triggerDive(side: number) {
+    this.diveT = 0.85;
+    this.diveSide = side >= 0 ? 1 : -1;
+  }
+
+  /** throw-in: ball overhead, snapped forward with both hands */
+  triggerThrow() {
+    this.throwT = 0.7;
   }
 
   /** referee: hold a card overhead for ~2s (yellow or red) */
@@ -296,6 +312,25 @@ export class CharModel {
       this.upperArmL?.rotateZ(2.2 * a);
       this.upperArmR?.rotateZ(-2.2 * a);
     }
+
+    // THROW-IN: both hands take the ball overhead, then a sharp forward
+    // snap with the torso following through — a real two-handed delivery
+    if (this.throwT > 0) {
+      this.throwT = Math.max(0, this.throwT - dt);
+      const t = this.throwT;
+      if (t > 0.22) {
+        // wind-up: arms straight overhead
+        const a = Math.min(1, (0.7 - t) / 0.18);
+        this.upperArmL?.rotateZ(2.5 * a);
+        this.upperArmR?.rotateZ(-2.5 * a);
+      } else {
+        // release: arms whip forward (torso lean composed after the slide
+        // block below — it owns the pose group)
+        const a = t / 0.22;
+        this.upperArmL?.rotateZ(1.1 + 1.4 * a);
+        this.upperArmR?.rotateZ(-(1.1 + 1.4 * a));
+      }
+    }
     const cradleTarget = s.holding ? 1 : 0;
     this.cradle += (cradleTarget - this.cradle) * (1 - Math.exp(-10 * dt));
     if (this.cradle > 0.02) {
@@ -332,6 +367,16 @@ export class CharModel {
     this.bank += (bankTarget - this.bank) * (1 - Math.exp(-10 * dt));
     this.pose.rotation.x = this.bank;
 
+    // KEEPER DIVE arms: both at full stretch (pose roll composed after the
+    // slide block, which owns the pose group)
+    if (this.diveT > 0) {
+      this.diveT = Math.max(0, this.diveT - dt);
+      const e = this.diveT > 0.55 ? (0.85 - this.diveT) / 0.3 : this.diveT / 0.55;
+      const env = Math.min(1, Math.max(0, e));
+      this.upperArmL?.rotateZ(2.6 * env);
+      this.upperArmR?.rotateZ(-2.6 * env);
+    }
+
     // SLIDE TACKLE pose (overlay, smoothed): body low and leaned back,
     // leading leg extended along the slide, trailing leg tucked — a proper
     // ground slide, not a somersault
@@ -348,6 +393,20 @@ export class CharModel {
     } else {
       this.pose.rotation.z = 0;
       this.pose.position.y = 0;
+    }
+
+    // pose-level keeper/throw overlays AFTER the slide block (it resets the
+    // pose group each frame, so these must compose on top of it)
+    if (this.diveT > 0) {
+      const e = this.diveT > 0.55 ? (0.85 - this.diveT) / 0.3 : this.diveT / 0.55;
+      const env = Math.min(1, Math.max(0, e));
+      // full-body roll toward the ball side, dropping toward the grass
+      this.pose.rotation.x = this.bank + this.diveSide * 1.25 * env;
+      this.pose.position.y = Math.min(this.pose.position.y, -0.5 * env);
+    }
+    if (this.throwT > 0 && this.throwT <= 0.22) {
+      // torso follows the throw through
+      this.pose.rotation.z -= 0.3 * (1 - this.throwT / 0.22);
     }
   }
 }

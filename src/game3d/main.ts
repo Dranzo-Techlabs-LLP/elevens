@@ -856,7 +856,15 @@ function onMsg(m: any) {
       if (m.kind === 'save') {
         banner('SAVE!', 900);
         const mdl = models.get(m.id);
-        if (mdl && 'triggerArms' in mdl.rig) (mdl.rig as any).triggerArms();
+        if (mdl) {
+          const rig = mdl.rig as any;
+          if (m.side && rig.triggerDive) rig.triggerDive(m.side); // full-stretch dive
+          else if (rig.triggerArms) rig.triggerArms();            // standing catch
+        }
+      }
+      if (m.kind === 'throw' && m.id) {
+        const mdl = models.get(m.id);
+        if (mdl && 'triggerThrow' in mdl.rig) (mdl.rig as any).triggerThrow();
       }
       if (m.kind === 'freekick') { banner('FREE KICK', 1400); sfx.whistle('foul'); }
       if (m.kind === 'advantage') banner('ADVANTAGE — PLAY ON', 1200);

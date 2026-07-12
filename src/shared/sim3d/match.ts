@@ -349,6 +349,19 @@ export class Match {
       // caught ball is glued this tick, not fought over
       this.stepKeeperHands();
 
+      // THROW-IN: the ball is IN THE TAKER'S HANDS, overhead — it rides
+      // above him until the two-handed release (his kick verb becomes the
+      // throw). This is what makes it read as a real throw-in, not a kick.
+      if (this.restartState?.kind === 'throwin' && this.restartState.taker >= 0) {
+        const t = this.players[this.restartState.taker];
+        this.ball.setTranslation(
+          { x: t.pos.x + Math.cos(t.yaw) * 0.18, y: 2.05, z: t.pos.z + Math.sin(t.yaw) * 0.18 },
+          true,
+        );
+        this.ball.setLinvel({ x: t.velX, y: 0, z: t.velZ }, true);
+        this.ball.setAngvel({ x: 0, y: 0, z: 0 }, true);
+      }
+
       // dead-ball lock: during a restart ceremony only the taker (and only
       // after the ceremony) may play the ball; a keeper hold locks to him
       const rs = this.restartState;
@@ -387,6 +400,9 @@ export class Match {
           poss: this.poss,
           ctlStates: this.ctlStates,
           holdIdx: this.holdIdx,
+          handHeldBy: this.holdIdx >= 0
+            ? this.holdIdx
+            : rs?.kind === 'throwin' ? rs.taker : -1,
           canPlay: rs
             ? (i: number) => i === rs.taker && this.tick >= rs.readyTick
             : undefined,
@@ -402,19 +418,26 @@ export class Match {
         const kicked = this.events.some(
           (e) => e.kind === 'kick' && e.playerIndex === rst.taker && VERBS.includes(e.detail ?? ''),
         );
-        const moved = Math.hypot(b.x - rst.x, b.z - rst.z) > 1.0;
+        // throw-ins release ONLY on the throw itself (the ball rides the
+        // taker's hands, so "ball moved" would misfire while he walks)
+        const moved = rst.kind !== 'throwin' && Math.hypot(b.x - rst.x, b.z - rst.z) > 1.0;
         if (this.tick >= rst.readyTick && (kicked || moved)) {
-          // throw-ins travel by hand: flatten a drilled kick into a throw arc
           if (rst.kind === 'throwin' && kicked) {
+            // two-handed overhead throw: launched from the hands (~2m up),
+            // flat-ish and quick — a throw, not a shot
             const v = this.ball.linvel();
             const h = Math.hypot(v.x, v.z);
-            const cap = Math.min(h, 10);
+            const cap = Math.min(Math.max(h, 6.5), 10.5);
             const k = h > 0.01 ? cap / h : 1;
-            this.ball.setLinvel({ x: v.x * k, y: Math.max(v.y, 2.2), z: v.z * k }, true);
+            this.ball.setLinvel({ x: v.x * k, y: 1.6, z: v.z * k }, true);
+            this.events.push({ kind: 'kick', playerIndex: rst.taker, detail: 'throw' });
           }
           this.restartState = null;
         } else if (this.tick > rst.readyTick + 6 * this.tickRate) {
-          this.restartState = null; // failsafe: never deadlock the match
+          // failsafe: never deadlock the match — a held throw-in ball is
+          // put down on the line, playable by anyone
+          if (rst.kind === 'throwin') this.placeBall(rst.x, rst.z);
+          this.restartState = null;
         }
       }
       // a keeper's kick out of his hands ends the hold
@@ -799,27 +822,38 @@ export class Match {
       if (!inBox) continue;
       const k = this.players[gi];
       const d = Math.hypot(bp.x - k.pos.x, bp.z - k.pos.z);
-      if (d > 1.3 || bp.y > 2.0) continue;
+      // a keeper's reach is his BODY plus a full-stretch dive
+      if (d > 2.1 || bp.y > 2.2) continue;
       // moving toward our goal = a shot to deal with
       const towardGoal = bv.x * own > 1.5;
       if (sp > 8.5 && towardGoal && this.actStates[gi].stunUntilTick <= this.tick) {
-        if (sp < 15) {
-          // CATCH: dead in the gloves
+        // which side of his body the ball is on (for the dive animation):
+        // signed lateral offset relative to his facing
+        const lat = Math.cos(k.yaw) * (bp.z - k.pos.z) - Math.sin(k.yaw) * (bp.x - k.pos.x);
+        const side = Math.abs(lat) < 0.5 ? 0 : Math.sign(lat);
+        // the dive itself: his body lunges toward the ball's line
+        if (side !== 0) {
+          k.velX += (bp.x - k.pos.x) * 3.2;
+          k.velZ += (bp.z - k.pos.z) * 3.2;
+        }
+        if (sp < 15 && Math.abs(lat) < 1.4) {
+          // CATCH: dead in the gloves (a full-stretch ball can't be held)
           this.holdIdx = gi;
           this.holdSince = this.tick;
           this.poss = { owner: gi, ownerSince: this.tick };
           this.ball.setLinvel({ x: 0, y: 0, z: 0 }, true);
           this.ball.setAngvel({ x: 0, y: 0, z: 0 }, true);
-          this.events.push({ kind: 'save', playerIndex: gi, detail: 'catch' });
+          this.actStates[gi].stunUntilTick = this.tick + Math.round(0.35 * this.tickRate);
+          this.events.push({ kind: 'save', playerIndex: gi, detail: 'catch', side });
         } else {
-          // PARRY: too hot to hold — beaten away from goal, up and wide
+          // PARRY: too hot (or full stretch) — beaten away from goal, wide
           const away = -own;
           this.ball.setLinvel(
             { x: away * sp * 0.4, y: Math.max(2.5, bv.y * 0.3 + 2), z: (bp.z >= k.pos.z ? 1 : -1) * sp * 0.35 },
             true,
           );
-          this.actStates[gi].stunUntilTick = this.tick + Math.round(0.5 * this.tickRate);
-          this.events.push({ kind: 'save', playerIndex: gi, detail: 'parry' });
+          this.actStates[gi].stunUntilTick = this.tick + Math.round(0.7 * this.tickRate);
+          this.events.push({ kind: 'save', playerIndex: gi, detail: 'parry', side: side || 1 });
         }
         this.lastTouch = gi;
       }
