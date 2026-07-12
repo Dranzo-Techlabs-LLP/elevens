@@ -21,6 +21,7 @@ const CLIP_NAMES = {
 // nominal ground speed each loop was authored at (m/s) — playback timeScale
 // is speed/nominal so the feet track the ground at any velocity
 const NOMINAL: Record<string, number> = { walk: 1.5, jog: 3.5, sprint: 7.4 };
+const UP = new THREE.Vector3(0, 1, 0);
 
 let gltf: { scene: THREE.Group; animations: THREE.AnimationClip[] } | null = null;
 
@@ -116,6 +117,10 @@ export interface CharState {
   shield?: boolean;
   sliding?: boolean;
   stunned?: boolean;
+  /** world yaw toward the ball — the head subtly tracks it */
+  lookYaw?: number;
+  /** the model's world yaw (to convert lookYaw into a local head turn) */
+  bodyYaw?: number;
 }
 
 export class CharModel {
@@ -130,6 +135,10 @@ export class CharModel {
   private calfR: THREE.Object3D | null = null;
   private thighL: THREE.Object3D | null = null;
   private calfL: THREE.Object3D | null = null;
+  private head: THREE.Object3D | null = null;
+  private headUpLocal = new THREE.Vector3(0, 1, 0); // bind-pose local up axis
+  private headLook = 0; // smoothed head yaw offset
+  private bank = 0;     // smoothed lean-into-turn
   private kickT = 0;
   private slideBlend = 0; // 0..1 smoothed slide pose weight
   private speedF = 0; // filtered speed for stable state picks
@@ -153,9 +162,20 @@ export class CharModel {
       if (o.name === 'calf_r') this.calfR = o;
       if (o.name === 'thigh_l') this.thighL = o;
       if (o.name === 'calf_l') this.calfL = o;
+      if (o.name === 'Head') this.head = o;
     });
     this.pose.add(model);
     this.group.add(this.pose);
+
+    // cache the head bone's LOCAL axis that corresponds to world-up in the
+    // bind pose — per-frame head-look then rotates around it locally (a
+    // world-axis rotate would force whole-skeleton matrix updates per call)
+    if (this.head) {
+      model.updateMatrixWorld(true);
+      const q = new THREE.Quaternion();
+      this.head.getWorldQuaternion(q);
+      this.headUpLocal.set(0, 1, 0).applyQuaternion(q.conjugate()).normalize();
+    }
 
     this.mixer = new THREE.AnimationMixer(model);
     for (const [key, name] of Object.entries(CLIP_NAMES)) {
@@ -173,13 +193,24 @@ export class CharModel {
     this.speedF += (s.speed - this.speedF) * (1 - Math.exp(-10 * dt));
     const sp = this.speedF;
 
+    // locomotion state with hysteresis — boundary chatter (7.9 <-> 8.1 m/s)
+    // used to re-trigger crossfades and looked twitchy
     let want: string;
+    const h = 0.3;
+    const up = (thr: number) => sp > thr + h;
+    const down = (thr: number) => sp < thr - h;
     if (s.sliding) want = this.cur; // slide is a POSE overlay, not a clip
     else if (s.stunned && this.actions.stun) want = 'stun';
-    else if (sp < 0.35) want = 'idle';
-    else if (sp < 2.4) want = 'walk';
-    else if (sp < 6.0) want = 'jog';
-    else want = 'sprint';
+    else {
+      want = this.cur === 'stun' ? 'idle' : this.cur;
+      if (want === 'idle' && up(0.35)) want = 'walk';
+      if (want === 'walk' && down(0.35)) want = 'idle';
+      if (want === 'walk' && up(2.4)) want = 'jog';
+      if (want === 'jog' && down(2.4)) want = 'walk';
+      if (want === 'jog' && up(6.0)) want = 'sprint';
+      if (want === 'sprint' && down(6.0)) want = 'jog';
+      if (!this.actions[want]) want = 'idle';
+    }
 
     if (want !== this.cur && this.actions[want]) {
       const prev = this.actions[this.cur];
@@ -209,6 +240,23 @@ export class CharModel {
       this.thighR?.rotateZ(-1.15 * k);
       this.calfR?.rotateZ(0.35 * k);
     }
+
+    // head subtly tracks the ball (life!), clamped to a natural range
+    if (this.head && s.lookYaw !== undefined && s.bodyYaw !== undefined) {
+      let d = s.lookYaw - s.bodyYaw;
+      while (d > Math.PI) d -= Math.PI * 2;
+      while (d < -Math.PI) d += Math.PI * 2;
+      const target = Math.abs(d) < 1.9 ? THREE.MathUtils.clamp(d, -0.65, 0.65) : 0;
+      this.headLook += (target - this.headLook) * (1 - Math.exp(-8 * dt));
+      if (Math.abs(this.headLook) > 0.01) {
+        this.head.rotateOnAxis(this.headUpLocal, -this.headLook); // local, cheap
+      }
+    }
+
+    // bank into turns (small, smoothed)
+    const bankTarget = THREE.MathUtils.clamp(-s.yawRate * 0.05, -0.14, 0.14);
+    this.bank += (bankTarget - this.bank) * (1 - Math.exp(-10 * dt));
+    this.pose.rotation.x = this.bank;
 
     // SLIDE TACKLE pose (overlay, smoothed): body low and leaned back,
     // leading leg extended along the slide, trailing leg tucked — a proper

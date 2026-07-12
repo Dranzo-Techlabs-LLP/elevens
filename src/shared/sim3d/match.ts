@@ -40,6 +40,7 @@ export interface MatchSnapshot {
   phase: Phase;
   score: [number, number];
   timeLeft: number;
+  owner: string | null; // id of the player with close control (carry)
   ball: { x: number; y: number; z: number; vx: number; vy: number; vz: number };
   players: {
     id: string;
@@ -267,6 +268,7 @@ export class Match {
         this.inputs.map((inp, i) => !!inp.shield && this.tick >= this.actStates[i].stunUntilTick),
         this.poss,
         this.ctlTune,
+        this.meta.map((m) => m.bot),
       );
       for (const ev of ctlEvents) this.lastTouch = ev.playerIndex;
       if (this.poss.owner >= 0) this.lastTouch = this.poss.owner;
@@ -379,6 +381,7 @@ export class Match {
       phase: this.phase,
       score: [this.score[0], this.score[1]],
       timeLeft: Math.max(0, Math.ceil(this.timeLeft)),
+      owner: this.poss.owner >= 0 ? this.meta[this.poss.owner].id : null,
       ball: { x: r1(bp.x), y: r1(bp.y), z: r1(bp.z), vx: r1(bv.x), vy: r1(bv.y), vz: r1(bv.z) },
       players: this.players.map((p, i) => ({
         id: this.meta[i].id,

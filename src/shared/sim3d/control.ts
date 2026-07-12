@@ -57,6 +57,7 @@ export function stepBallControl(
   shielding: boolean[],
   poss: Possession,
   tune: ControlTune = defaultControlTune(),
+  isBot: boolean[] = [],
 ): ControlEvent[] {
   const events: ControlEvent[] = [];
   const bp = ball.translation();
@@ -106,7 +107,8 @@ export function stepBallControl(
       poss.ownerSince = tick;
     } else if (
       nearest !== poss.owner &&
-      nd < dist(poss.owner) * 0.6 &&
+      // contest bias: humans win 50/50s a bit more often than bots
+      nd < dist(poss.owner) * (isBot[nearest] && !isBot[poss.owner] ? 0.45 : !isBot[nearest] && isBot[poss.owner] ? 0.75 : 0.6) &&
       tick - poss.ownerSince > 8
     ) {
       // clean steal: previous owner is locked out briefly

@@ -31,6 +31,7 @@ interface Snap {
   phase: string;
   score: [number, number];
   timeLeft: number;
+  owner: string | null;
   ack: number;
   ball: { x: number; y: number; z: number; vx: number; vy: number; vz: number };
   players: {
@@ -186,6 +187,16 @@ const currTickState = { x: 0, z: 0, yaw: 0 };
 let visYaw = 0;
 let visSpeed = 0;
 
+// PREDICTED BALL CARRY: the ball snapshot lags ~RTT+interp behind your
+// predicted body, so a carried ball visibly trailed every turn. When the
+// SERVER says you own it, the rendered ball rides your predicted feet with
+// zero lag; releases (kick/tackle/loss) blend back to the interpolated
+// truth. Presentation only — the server stays authoritative.
+let serverOwnerId: string | null = null;
+let kickReleasedAt = -1e9;
+const ballVis = new THREE.Vector3(0, 0.11, 0);
+let prevActs = { pass: false, through: false, shoot: false, lob: false };
+
 function initLocalSim() {
   localWorld = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
   localWorld.timestep = DT;
@@ -241,8 +252,29 @@ renderer.shadowMap.enabled = quality === 'high';
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x87c8ee);
-scene.fog = new THREE.Fog(0x87c8ee, 70, 220);
+scene.fog = new THREE.Fog(0x9fd4f5, 80, 240);
+// gradient sky dome (zenith blue -> warm horizon)
+{
+  const c = document.createElement('canvas');
+  c.width = 2;
+  c.height = 512;
+  const g = c.getContext('2d')!;
+  const grad = g.createLinearGradient(0, 0, 0, 512);
+  grad.addColorStop(0, '#3d86c6');
+  grad.addColorStop(0.55, '#8ec9ef');
+  grad.addColorStop(0.8, '#cfe8f7');
+  grad.addColorStop(1, '#eef7dd');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 2, 512);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const dome = new THREE.Mesh(
+    new THREE.SphereGeometry(320, 24, 12, 0, Math.PI * 2, 0, Math.PI * 0.55),
+    new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false }),
+  );
+  dome.position.y = -6;
+  scene.add(dome);
+}
 const camera = new THREE.PerspectiveCamera(55, 1, 0.05, 400);
 
 scene.add(new THREE.HemisphereLight(0xe8f4ff, 0x2f6b38, 0.95));
@@ -256,19 +288,41 @@ scene.add(sun);
 // pitch
 {
   const texC = document.createElement('canvas');
-  texC.width = 1024; texC.height = 512;
+  texC.width = 2048; texC.height = 1024;
   const tx = texC.getContext('2d')!;
-  tx.fillStyle = '#2f9e44'; tx.fillRect(0, 0, 1024, 512);
-  tx.fillStyle = 'rgba(255,255,255,0.05)';
-  for (let i = 0; i < 8; i += 2) tx.fillRect(i * 128, 0, 128, 512);
-  for (let i = 0; i < 2600; i++) { tx.fillStyle = `rgba(0,60,0,${Math.random() * 0.09})`; tx.fillRect(Math.random() * 1024, Math.random() * 512, 2, 2); }
-  tx.strokeStyle = '#fff'; tx.lineWidth = 3;
-  tx.strokeRect(2, 2, 1020, 508);
-  tx.beginPath(); tx.moveTo(512, 0); tx.lineTo(512, 512); tx.stroke();
-  tx.beginPath(); tx.arc(512, 256, 77, 0, Math.PI * 2); tx.stroke();
-  const boxW = 1024 * (6 / L), boxH = 512 * (7 / W);
+  const PX = 2048 / L; // px per meter
+  tx.fillStyle = '#2f9e44'; tx.fillRect(0, 0, 2048, 1024);
+  // mow stripes, subtle two-tone
+  tx.fillStyle = 'rgba(255,255,255,0.055)';
+  for (let i = 0; i < 10; i += 2) tx.fillRect(i * 204.8, 0, 204.8, 1024);
+  // grass noise
+  for (let i = 0; i < 9000; i++) {
+    tx.fillStyle = `rgba(0,55,0,${Math.random() * 0.10})`;
+    tx.fillRect(Math.random() * 2048, Math.random() * 1024, 2.5, 2.5);
+  }
+  tx.strokeStyle = 'rgba(255,255,255,0.95)'; tx.lineWidth = 4;
+  tx.fillStyle = 'rgba(255,255,255,0.95)';
+  tx.strokeRect(3, 3, 2042, 1018);
+  tx.beginPath(); tx.moveTo(1024, 3); tx.lineTo(1024, 1021); tx.stroke();
+  tx.beginPath(); tx.arc(1024, 512, 3 * PX, 0, Math.PI * 2); tx.stroke();
+  tx.beginPath(); tx.arc(1024, 512, 6, 0, Math.PI * 2); tx.fill();
+  const boxW = 6 * PX, boxH = 7 * PX * (1024 / 1024) * (L / (2 * W)); // keep meters square: py per meter = 1024/W
+  const PY = 1024 / W;
   for (const s of [0, 1]) {
-    tx.strokeRect(s ? 1022 - boxW : 2, 256 - boxH / 2, boxW, boxH);
+    const bx = s ? 2045 - 6 * PX : 3;
+    tx.strokeRect(bx, 512 - (7 * PY) / 2, 6 * PX, 7 * PY);
+    // penalty spot + arc
+    const spotX = s ? 2045 - 4 * PX : 3 + 4 * PX;
+    tx.beginPath(); tx.arc(spotX, 512, 5, 0, Math.PI * 2); tx.fill();
+    tx.beginPath();
+    tx.arc(spotX, 512, 2.5 * PX, s ? Math.PI * 0.6 : -Math.PI * 0.4, s ? Math.PI * 1.4 : Math.PI * 0.4);
+    tx.stroke();
+  }
+  // corner arcs
+  for (const [cx3, cy3] of [[3, 3], [2045, 3], [3, 1021], [2045, 1021]]) {
+    tx.beginPath();
+    tx.arc(cx3, cy3, 0.75 * PX, 0, Math.PI * 2);
+    tx.stroke();
   }
   const ptex = new THREE.CanvasTexture(texC);
   ptex.colorSpace = THREE.SRGBColorSpace;
@@ -316,15 +370,50 @@ function netGrid(w: number, h: number, step: number) {
     roof.position.set(gx + sx * gd / 2, gh, 0);
     scene.add(roof);
   }
-  // boards
-  const boardMat = new THREE.MeshLambertMaterial({ color: 0x134e4a });
-  const mkBoard = (x: number, z: number, w2: number, d: number) => {
-    const b = new THREE.Mesh(new THREE.BoxGeometry(w2, 1, d), boardMat);
-    b.position.set(x, 0.5, z);
+  // ad boards ringing the pitch
+  const adC = document.createElement('canvas');
+  adC.width = 1024; adC.height = 64;
+  const adx = adC.getContext('2d')!;
+  const ads = ['E L E V E N S', 'DRANZO', '5 v 5', 'ELEVENS ARENA'];
+  for (let i = 0; i < 4; i++) {
+    adx.fillStyle = i % 2 ? '#0b3d91' : '#0f766e';
+    adx.fillRect(i * 256, 0, 256, 64);
+    adx.fillStyle = '#f8fafc';
+    adx.font = '700 30px system-ui';
+    adx.textAlign = 'center';
+    adx.textBaseline = 'middle';
+    adx.fillText(ads[i], i * 256 + 128, 34);
+  }
+  const adTex = new THREE.CanvasTexture(adC);
+  adTex.colorSpace = THREE.SRGBColorSpace;
+  adTex.wrapS = THREE.RepeatWrapping;
+  const mkBoard = (x: number, z: number, w2: number, rotY = 0) => {
+    const m = new THREE.MeshLambertMaterial({ map: adTex.clone() });
+    m.map!.repeat.set(Math.max(1, Math.round(w2 / 10)), 1);
+    const b = new THREE.Mesh(new THREE.BoxGeometry(w2, 0.9, 0.15), m);
+    b.position.set(x, 0.45, z);
+    b.rotation.y = rotY;
     scene.add(b);
   };
-  mkBoard(0, -W / 2 - 0.15, L + 2, 0.3);
-  mkBoard(0, W / 2 + 0.15, L + 2, 0.3);
+  mkBoard(0, -W / 2 - 0.3, L + 2);
+  mkBoard(0, W / 2 + 0.3, L + 2, Math.PI);
+  mkBoard(-L / 2 - 0.9, 0, W + 1, Math.PI / 2);
+  mkBoard(L / 2 + 0.9, 0, W + 1, -Math.PI / 2);
+
+  // corner flags
+  for (const [cxx, czz] of [[-L / 2, -W / 2], [L / 2, -W / 2], [-L / 2, W / 2], [L / 2, W / 2]]) {
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.02, 0.02, 1.5, 6),
+      new THREE.MeshLambertMaterial({ color: 0xf8fafc }),
+    );
+    pole.position.set(cxx, 0.75, czz);
+    const flag = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.35, 0.25),
+      new THREE.MeshLambertMaterial({ color: 0xef4444, side: THREE.DoubleSide }),
+    );
+    flag.position.set(cxx + 0.19, 1.32, czz);
+    scene.add(pole, flag);
+  }
   // crowd stands (far side + ends)
   const crowdC = document.createElement('canvas');
   crowdC.width = 256; crowdC.height = 64;
@@ -334,20 +423,40 @@ function netGrid(w: number, h: number, step: number) {
   for (let i = 0; i < 800; i++) { cx2.fillStyle = cols[(Math.random() * cols.length) | 0]; cx2.fillRect(Math.random() * 256, Math.random() * 64, 2, 2); }
   const crowdTex = new THREE.CanvasTexture(crowdC);
   crowdTex.wrapS = crowdTex.wrapT = THREE.RepeatWrapping;
-  const stand = (w2: number) => {
+  const stand = (w2: number, withRoof: boolean) => {
     const g = new THREE.Group();
-    for (let t = 0; t < 3; t++) {
+    const tiers = withRoof ? 4 : 3; // open low terraces at the ends
+    for (let t = 0; t < tiers; t++) {
       const m = new THREE.MeshLambertMaterial({ map: crowdTex.clone() });
       m.map!.repeat.set(Math.round(w2 / 6), 1);
-      const s = new THREE.Mesh(new THREE.BoxGeometry(w2, 1.1, 1.4), m);
-      s.position.set(0, 0.55 + t * 1.0, -t * 1.4);
+      m.map!.offset.set(Math.random(), 0);
+      const s = new THREE.Mesh(new THREE.BoxGeometry(w2, 1.1, 1.5), m);
+      s.position.set(0, 0.55 + t * 1.05, -t * 1.5);
       g.add(s);
+    }
+    const wallMat = new THREE.MeshLambertMaterial({ color: 0x3f4a5a });
+    if (withRoof) {
+      const back = new THREE.Mesh(new THREE.BoxGeometry(w2, 5.6, 0.3), wallMat);
+      back.position.set(0, 2.8, -4.9);
+      g.add(back);
+      // roof only on the far grandstand — end roofs occluded the corners
+      const roof = new THREE.Mesh(
+        new THREE.BoxGeometry(w2, 0.22, 6.6),
+        new THREE.MeshLambertMaterial({ color: 0x2b3442 }),
+      );
+      roof.position.set(0, 5.75, -2.4);
+      g.add(roof);
+      for (let px2 = -w2 / 2 + 2; px2 <= w2 / 2 - 2; px2 += Math.max(6, w2 / 6)) {
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 5.6, 6), wallMat);
+        post.position.set(px2, 2.8, 0.4);
+        g.add(post);
+      }
     }
     return g;
   };
-  const s1 = stand(L + 8); s1.position.set(0, 0, -W / 2 - 2.4); s1.rotation.y = Math.PI; scene.add(s1);
-  const s3 = stand(W + 4); s3.position.set(-L / 2 - 2.8, 0, 0); s3.rotation.y = -Math.PI / 2; scene.add(s3);
-  const s4 = stand(W + 4); s4.position.set(L / 2 + 2.8, 0, 0); s4.rotation.y = Math.PI / 2; scene.add(s4);
+  const s1 = stand(L + 8, true); s1.position.set(0, 0, -W / 2 - 2.4); s1.rotation.y = Math.PI; scene.add(s1);
+  const s3 = stand(W + 2, false); s3.position.set(-L / 2 - 3.6, 0, 0); s3.rotation.y = -Math.PI / 2; scene.add(s3);
+  const s4 = stand(W + 2, false); s4.position.set(L / 2 + 3.6, 0, 0); s4.rotation.y = Math.PI / 2; scene.add(s4);
   // floodlights
   for (const [fx, fz] of [[-L / 2 - 4, -W / 2 - 4], [L / 2 + 4, -W / 2 - 4], [-L / 2 - 4, W / 2 + 4], [L / 2 + 4, W / 2 + 4]]) {
     const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.12, 12, 8), new THREE.MeshLambertMaterial({ color: 0x475569 }));
@@ -393,6 +502,7 @@ const ballShadow = (() => {
 interface Model { rig: HumanRig | CharModel; label: THREE.Sprite; ring: THREE.Mesh; ringMat: THREE.MeshBasicMaterial; }
 const models = new Map<string, Model>();
 (window as any).__models = models; // debug/verification hook
+(window as any).__ballVis = ballVis;
 function label(text: string) {
   const c = document.createElement('canvas');
   c.width = 256; c.height = 56;
@@ -509,6 +619,7 @@ function onMsg(m: any) {
       (window as any).__snap = m; // debug/telemetry hook
       (window as any).__camYaw = camYaw;
       (window as any).__camMode = camMode;
+      serverOwnerId = m.owner ?? null;
       const prev = phase;
       phase = m.phase;
       snaps.push({ at: performance.now(), s: m });
@@ -599,15 +710,50 @@ function frame() {
 
   const view = sample();
   if (view) {
-    // ball
-    ballMesh.position.set(view.ball.x, view.ball.y, view.ball.z);
-    const sp = Math.hypot(view.ball.vx, view.ball.vz);
-    if (sp > 0.2) {
-      const axis = new THREE.Vector3(view.ball.vz / sp, 0, -view.ball.vx / sp);
-      ballMesh.rotateOnWorldAxis(axis, (-sp * dtReal) / BALL.radius);
+    // ---- ball rendering: predicted carry vs interpolated truth ----
+    // detect kick releases: the instant you strike, stop gluing — the interp
+    // stream will show the ball leaving (windup animation covers the delay)
+    const actNow = readInput();
+    const acts = { pass: actNow.pass, through: actNow.through, shoot: actNow.shoot, lob: actNow.lob } as any;
+    for (const k of Object.keys(prevActs) as (keyof typeof prevActs)[]) {
+      if (prevActs[k] && !acts[k]) kickReleasedAt = now;
+      prevActs[k] = !!acts[k];
     }
-    ballShadow.position.set(view.ball.x, 0.02, view.ball.z);
-    const shk = Math.max(0.3, 1 - (view.ball.y - BALL.radius) / 8);
+    const iCarry =
+      serverOwnerId !== null &&
+      serverOwnerId === myId &&
+      localMe !== null &&
+      now - kickReleasedAt > 600 &&
+      phase === 'playing';
+    if (iCarry) {
+      // ball rides the PREDICTED feet — zero perceived lag through turns
+      const lead = 0.32 + Math.min(0.25, (visSpeed / 8.5) * 0.25);
+      const tx = myVisX + Math.cos(visYaw) * lead;
+      const tz = myVisZ + Math.sin(visYaw) * lead;
+      const k = 1 - Math.exp(-22 * dtReal);
+      ballVis.x += (tx - ballVis.x) * k;
+      ballVis.z += (tz - ballVis.z) * k;
+      ballVis.y += (BALL.radius - ballVis.y) * k;
+      // roll the ball with the carry speed
+      if (visSpeed > 0.2) {
+        const axis = new THREE.Vector3(Math.sin(visYaw), 0, -Math.cos(visYaw));
+        ballMesh.rotateOnWorldAxis(axis, (-visSpeed * dtReal) / BALL.radius);
+      }
+    } else {
+      // interpolated truth, converged fast so owner->free transitions don't pop
+      const k = 1 - Math.exp(-28 * dtReal);
+      ballVis.x += (view.ball.x - ballVis.x) * k;
+      ballVis.y += (view.ball.y - ballVis.y) * k;
+      ballVis.z += (view.ball.z - ballVis.z) * k;
+      const sp = Math.hypot(view.ball.vx, view.ball.vz);
+      if (sp > 0.2) {
+        const axis = new THREE.Vector3(view.ball.vz / sp, 0, -view.ball.vx / sp);
+        ballMesh.rotateOnWorldAxis(axis, (-sp * dtReal) / BALL.radius);
+      }
+    }
+    ballMesh.position.copy(ballVis);
+    ballShadow.position.set(ballVis.x, 0.02, ballVis.z);
+    const shk = Math.max(0.3, 1 - (ballVis.y - BALL.radius) / 8);
     ballShadow.scale.setScalar(shk);
 
     // players — bots encode their team in the id (bot-0-*, bot-1-*);
@@ -653,6 +799,8 @@ function frame() {
         shield: p.shielding,
         sliding: p.sliding,
         stunned: p.stunned,
+        lookYaw: Math.atan2(ballVis.z - pz, ballVis.x - px),
+        bodyYaw: pyaw,
       } as any);
       const charge = isMe ? Math.min(1, shootHeldLocal / 900) : p.charge;
       m.ringMat.opacity = charge > 0.02 ? 0.35 + 0.6 * charge : 0;
