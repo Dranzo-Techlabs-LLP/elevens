@@ -491,20 +491,24 @@ function netGrid(w: number, h: number, step: number) {
       m.map!.repeat.set(Math.round(w2 / 6), 1);
       m.map!.offset.set(Math.random(), 0);
       const s = new THREE.Mesh(new THREE.BoxGeometry(w2, 1.1, 1.5), m);
-      s.position.set(0, 0.55 + t * 1.05, -t * 1.5);
+      // depth grows along LOCAL +z = "away from the pitch" under every group
+      // rotation used below. (The old -z authoring flipped under rotation.y=π
+      // and marched the tiers + roof OVER the field — the dark plane that
+      // occluded the far touchline and made players look out of bounds.)
+      s.position.set(0, 0.55 + t * 1.05, t * 1.5);
       g.add(s);
     }
     const wallMat = new THREE.MeshLambertMaterial({ color: 0x3f4a5a });
     if (withRoof) {
       const back = new THREE.Mesh(new THREE.BoxGeometry(w2, 6.8, 0.3), wallMat);
-      back.position.set(0, 3.4, -6.2);
+      back.position.set(0, 3.4, 6.2);
       g.add(back);
       // roof only on the far grandstand — end roofs occluded the corners
       const roof = new THREE.Mesh(
         new THREE.BoxGeometry(w2, 0.22, 5.2),
         new THREE.MeshLambertMaterial({ color: 0x3a4658 }),
       );
-      roof.position.set(0, 6.95, -4.0);
+      roof.position.set(0, 6.95, 4.0);
       g.add(roof);
       // lit underside so the bowl doesn't read as a black maw
       const under = new THREE.Mesh(
@@ -512,22 +516,22 @@ function netGrid(w: number, h: number, step: number) {
         new THREE.MeshBasicMaterial({ color: 0x2f3a4d }),
       );
       under.rotation.x = Math.PI / 2;
-      under.position.set(0, 6.82, -4.0);
+      under.position.set(0, 6.82, 4.0);
       g.add(under);
       for (let px2 = -w2 / 2 + 2; px2 <= w2 / 2 - 2; px2 += Math.max(6, w2 / 6)) {
         const post = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 6.8, 6), wallMat);
-        post.position.set(px2, 3.4, 0.6);
+        post.position.set(px2, 3.4, 1.4); // front supports at the stand's leading edge
         g.add(post);
       }
-      // roof flag row
+      // roof flag row (outer edge)
       for (let fx2 = -w2 / 2 + 4; fx2 <= w2 / 2 - 4; fx2 += Math.max(8, w2 / 5)) {
         const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.4, 5), wallMat);
-        pole.position.set(fx2, 7.7, -3.0);
+        pole.position.set(fx2, 7.7, 5.0);
         const flag = new THREE.Mesh(
           new THREE.PlaneGeometry(0.7, 0.4),
           new THREE.MeshLambertMaterial({ color: [0x15803d, 0xd97706, 0x3b82f6][(Math.abs(fx2) | 0) % 3], side: THREE.DoubleSide }),
         );
-        flag.position.set(fx2 + 0.36, 8.15, -3.0);
+        flag.position.set(fx2 + 0.36, 8.15, 5.0);
         g.add(pole, flag);
       }
     }
@@ -543,7 +547,7 @@ function netGrid(w: number, h: number, step: number) {
   ] as const) {
     const c = stand(9, false, 4);
     c.position.set(cx4, 0, cz4);
-    c.rotation.y = ry + Math.PI; // face the pitch
+    c.rotation.y = ry; // +local-z (depth) points away from the pitch
     scene.add(c);
   }
   // dugouts on the near touchline (broadcast side)
