@@ -892,6 +892,10 @@ function frame() {
         pyaw = p.yaw;
         spd = Math.hypot(p.vx, p.vz);
       }
+      // presentation clamp: whatever the source (stale server, desync,
+      // interpolation overshoot), a player is never DRAWN outside the field
+      px = Math.max(-L / 2 + 0.25, Math.min(L / 2 - 0.25, px));
+      pz = Math.max(-W / 2 + 0.25, Math.min(W / 2 - 0.25, pz));
       if (isMe) { myVisX = px; myVisZ = pz; }
       m.rig.group.position.set(px, 0, pz);
       m.rig.group.rotation.y = -pyaw;

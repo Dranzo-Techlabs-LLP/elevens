@@ -190,7 +190,7 @@ export class SimPlayer {
       this.collider,
       { x: this.velX * dt, y: 0, z: this.velZ * dt },
       undefined,
-      (0x0002 << 16) | 0x0001,
+      (0x0002 << 16) | (0x0001 | 0x0008), // walls + player-only mouth seals
     );
     const m = this.controller.computedMovement();
     const p = this.body.translation();

@@ -100,6 +100,18 @@ export class Match {
     };
     wall(0, -W / 2 - 0.15, L / 2 + 1, 0.15);
     wall(0, W / 2 + 0.15, L / 2 + 1, 0.15);
+    // PLAYER-ONLY seals across the goal mouths (group 0x8): the ball sails
+    // through into the net, players cannot — physical backup to the
+    // position clamp in SimPlayer
+    for (const sx of [-1, 1]) {
+      const b = this.world.createRigidBody(
+        R.RigidBodyDesc.fixed().setTranslation(sx * (L / 2 + 0.15), 1, 0),
+      );
+      this.world.createCollider(
+        R.ColliderDesc.cuboid(0.15, 1, PITCH_5S.goalWidth / 2 + 0.4).setCollisionGroups((0x0008 << 16) | 0x0002),
+        b,
+      );
+    }
     // end walls have goal gaps
     const gapZ = PITCH_5S.goalWidth / 2;
     const endSeg = (W / 2 - gapZ) / 2 + gapZ;
@@ -135,7 +147,10 @@ export class Match {
       R.ColliderDesc.ball(BALL.radius)
         .setMass(BALL.mass)
         .setRestitution(BALL.restitution)
-        .setFriction(BALL.friction),
+        .setFriction(BALL.friction)
+        // ball hits walls (0x1) and players (0x2) but passes the player-only
+        // goal-mouth seals (0x8) — otherwise no goals
+        .setCollisionGroups((0x0004 << 16) | 0x0003),
       this.ball,
     );
   }
