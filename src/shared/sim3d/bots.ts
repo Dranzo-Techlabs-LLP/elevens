@@ -139,7 +139,19 @@ export function botThink(match: Match, i: number): PlayerFullInput {
   // everyone else holds position (opponents by law, teammates for shape).
   const rs = match.restartState;
   if (rs) {
-    if (rs.taker !== i) return inp;            // hold your ground
+    if (rs.taker !== i) {
+      // teammates SHOW for the restart: the two nearest offer an infield
+      // outlet instead of statue-standing — the throw/kick has a target
+      if (meta.team === rs.team && rs.kind !== 'penalty' && rs.kind !== 'goalkick') {
+        const d = distBall(i);
+        if (d > 2.5 && d < 12) {
+          const inz = rs.kind === 'throwin' ? -Math.sign(rs.z || 1) : 0;
+          seek(rs.x + Math.sign(attackX) * 2.0, rs.z + inz * 4.5, { stopAt: 0.8, mag: 0.6 });
+          return inp;
+        }
+      }
+      return inp; // opponents (and far mates) hold their ground
+    }
     if (match.tick < rs.readyTick) return inp; // ceremony: stand over it
     const dRest = distBall(i);
     if (dRest > 0.75 && !iHaveIt) {
@@ -167,8 +179,9 @@ export function botThink(match: Match, i: number): PlayerFullInput {
         pulse(inp, 'lob', match.tick, 18);
         return inp;
       default:
-        // throw-in / free kick: find a teammate (the pass cone aims it)
-        seek(attackX, me.pos.z, { stopAt: 0.2, mag: 0.3 });
+        // throw-in / free kick: face INFIELD toward support (the server
+        // aims the actual throw at the best receiver)
+        seek(me.pos.x + Math.sign(attackX) * 3, me.pos.z - Math.sign(me.pos.z || 1) * 4, { stopAt: 0.2, mag: 0.3 });
         pulse(inp, 'pass', match.tick, 18);
         return inp;
     }
@@ -318,7 +331,14 @@ export function botThink(match: Match, i: number): PlayerFullInput {
       // ATTACKING SHAPE: push up with play — one support man just behind
       // the ball line, the rest ahead in lanes. Open-field football needs
       // bodies forward; five men parked halfway home is a sterile 0-0.
-      const ahead = nth % 2 === 0 ? 4.0 : -2.0;
+      // GAME PLAN: chasing the game late -> everyone commits higher;
+      // protecting a lead late -> keep more bodies behind the ball.
+      const myGoals = match.score[meta.team];
+      const theirGoals = match.score[1 - meta.team];
+      const late = match.timeLeft < 60;
+      let ahead = nth % 2 === 0 ? 4.0 : -2.0;
+      if (late && myGoals < theirGoals) ahead += 2.5;      // all-in
+      else if (late && myGoals > theirGoals) ahead -= 2.5; // see it out
       spot = { x: bp.x + Math.sign(attackX) * ahead, z: lane };
     } else {
       // defensive zone home: between ball and own goal

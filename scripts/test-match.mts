@@ -480,6 +480,13 @@ const out: Record<string, unknown> = {};
       }
     }
   }
+  // after the throw the ball must STAY IN and reach the throwing team
+  let reOut = false;
+  for (let t = 0; t < 40; t++) {
+    m.setInput(0, idleFullInput()); m.setInput(1, idleFullInput());
+    for (const e of m.step()) if (e.detail === 'throwin') reOut = true;
+  }
+  const bpAfter = m.ball.translation();
   out.throwInLaw = {
     lastTouchWas: touched,
     event: ev,
@@ -488,7 +495,39 @@ const out: Record<string, unknown> = {};
     ballInHands: inHands,
     thrown,
     releaseSpeed: +releaseSpeed.toFixed(1),
-    ok: ev === 'throwin' && touched === 0 && rs?.team === 1 && inHands && thrown && releaseSpeed <= 10.6,
+    stayedIn: !reOut && Math.abs(bpAfter.z) < 10,
+    ok: ev === 'throwin' && touched === 0 && rs?.team === 1 && inHands && thrown
+      && releaseSpeed <= 10.6 && !reOut && Math.abs(bpAfter.z) < 10,
+  };
+}
+
+// 18b. THROW-IN TARGETING: with teammates infield, the throw is delivered
+//      to the best receiver — the receiving team keeps the ball
+{
+  const { botThink } = await import('../src/shared/sim3d/bots');
+  const m = new Match(RAPIER, 30);
+  for (let n = 0; n < 3; n++) m.addPlayer(`bot-0-${n}`, `A${n}`, 0, true);
+  for (let n = 0; n < 3; n++) m.addPlayer(`bot-1-${n}`, `B${n}`, 1, true);
+  m.restart(180);
+  // team 0 touches, ball out over the touchline -> throw-in to team 1
+  m.players[1].body.setTranslation({ x: 2, y: 0.91, z: 5 }, true);
+  m.ball.setTranslation({ x: 2.4, y: 0.11, z: 5 }, true);
+  for (let t = 0; t < 10; t++) { for (let i = 0; i < 6; i++) m.setInput(i, idleFullInput()); m.step(); }
+  m.ball.setLinvel({ x: 0, y: 4, z: 14 }, true);
+  let thrownTo = -1, reOut2 = false, sawThrow = false;
+  for (let t = 0; t < 300; t++) {
+    for (let i = 0; i < 6; i++) m.setInput(i, botThink(m, i));
+    for (const e of m.step()) {
+      if (e.detail === 'throw') sawThrow = true;
+      if (sawThrow && e.detail === 'throwin') reOut2 = true;
+    }
+    if (sawThrow && m.poss.owner >= 0) { thrownTo = m.poss.owner; break; }
+  }
+  out.throwTargeting = {
+    sawThrow,
+    firstOwnerTeam: thrownTo >= 0 ? m.meta[thrownTo].team : -1,
+    reOut: reOut2,
+    ok: sawThrow && thrownTo >= 0 && m.meta[thrownTo].team === 1 && !reOut2,
   };
 }
 

@@ -425,13 +425,48 @@ export class Match {
         const moved = rst.kind !== 'throwin' && Math.hypot(b.x - rst.x, b.z - rst.z) > 1.0;
         if (this.tick >= rst.readyTick && (kicked || moved)) {
           if (rst.kind === 'throwin' && kicked) {
-            // two-handed overhead throw: launched from the hands (~2m up),
-            // flat-ish and quick — a throw, not a shot
-            const v = this.ball.linvel();
-            const h = Math.hypot(v.x, v.z);
-            const cap = Math.min(Math.max(h, 6.5), 10.5);
-            const k = h > 0.01 ? cap / h : 1;
-            this.ball.setLinvel({ x: v.x * k, y: 1.6, z: v.z * k }, true);
+            // A THROW-IN GOES TO A TEAMMATE. Pick the best infield receiver
+            // (open, ~6m ideal) and deliver to his feet — never back over
+            // the line the ball just left.
+            const t = this.players[rst.taker];
+            const bpNow = this.ball.translation();
+            let best = -1, bs = -Infinity;
+            for (let i = 0; i < this.players.length; i++) {
+              if (i === rst.taker || this.meta[i].team !== rst.team) continue;
+              const p = this.players[i].pos;
+              const d = Math.hypot(p.x - t.pos.x, p.z - t.pos.z);
+              if (d < 2 || d > 14) continue;
+              if (Math.abs(p.z) > W / 2 - 0.8) continue; // receiver must be infield
+              let open = 99;
+              for (let j = 0; j < this.players.length; j++) {
+                if (this.meta[j].team === rst.team) continue;
+                const o = this.players[j].pos;
+                open = Math.min(open, Math.hypot(o.x - p.x, o.z - p.z));
+              }
+              const score = Math.min(open, 6) - Math.abs(d - 6) * 0.3;
+              if (score > bs) { bs = score; best = i; }
+            }
+            if (best >= 0) {
+              const r = this.players[best];
+              const lx = r.pos.x + r.velX * 0.3;
+              const lz = r.pos.z + r.velZ * 0.3;
+              const dx = lx - bpNow.x, dz = lz - bpNow.z;
+              const dd = Math.max(0.5, Math.hypot(dx, dz));
+              const speed = Math.min(10.5, Math.max(5, 3.5 + dd * 0.75));
+              this.ball.setLinvel(
+                { x: (dx / dd) * speed, y: 1.2 + dd * 0.07, z: (dz / dd) * speed },
+                true,
+              );
+            } else {
+              // no receiver: at least throw INFIELD, capped to throw pace
+              const v = this.ball.linvel();
+              const h = Math.hypot(v.x, v.z);
+              const cap = Math.min(Math.max(h, 6.5), 10.5);
+              let vx = v.x, vz = v.z;
+              if (vz * Math.sign(rst.z) > 0) vz = -vz; // never back over the line
+              const k2 = h > 0.01 ? cap / Math.hypot(vx, vz) : 1;
+              this.ball.setLinvel({ x: vx * k2, y: 1.6, z: vz * k2 }, true);
+            }
             this.events.push({ kind: 'kick', playerIndex: rst.taker, detail: 'throw' });
           }
           this.restartState = null;
