@@ -881,12 +881,17 @@ function onMsg(m: any) {
       }
       if (m.kind === 'kick' && m.id) {
         const mdl = models.get(m.id);
-        if (mdl && 'triggerKick' in mdl.rig) {
-          (mdl.rig as any).triggerKick();
-          const p = mdl.rig.group.position;
-          fx.kickPuff(p.x, p.z);
+        if (mdl) {
+          const rig = mdl.rig as any;
+          if (m.tech === 'header' && rig.triggerHeader) rig.triggerHeader();      // leap + nod
+          else if (m.tech === 'volley' && rig.triggerKick) rig.triggerKick(1.5);  // big mid-air swing
+          else if (rig.triggerKick) {
+            rig.triggerKick();
+            const p = mdl.rig.group.position;
+            fx.kickPuff(p.x, p.z); // turf chips only for grounded strikes
+          }
         }
-        sfx.kick(0.65);
+        sfx.kick(m.tech === 'header' ? 0.35 : 0.65);
       }
       break;
     case 'error':

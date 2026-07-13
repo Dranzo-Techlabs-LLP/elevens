@@ -61,6 +61,9 @@ export function stepBallControl(
   // dead-ball lock: while a restart ceremony (or a keeper's hand-hold) is
   // active, ONLY this player may claim or touch the ball (-1 = open play)
   lockedTo = -1,
+  // players with a strike queued at the contact frame: the cushion trap
+  // must not kill the ball a header/volley is about to meet
+  pendingKick: boolean[] = [],
 ): ControlEvent[] {
   const events: ControlEvent[] = [];
   const bp = ball.translation();
@@ -70,8 +73,32 @@ export function stepBallControl(
 
   if (bp.y > tune.ballMaxHeight) {
     // airborne: nobody has close control — EXCEPT a keeper holding the
-    // ball in his hands at chest height (the match glues it there)
-    if (lockedTo < 0) poss.owner = -1;
+    // ball in his hands at chest height (the match glues it there).
+    // But a dropping ball CAN be cushioned: chest/head trap kills its
+    // pace and puts it at the feet (how crosses become playable).
+    if (lockedTo < 0) {
+      poss.owner = -1;
+      if (bp.y < 2.2 && bv.y < 0.5) {
+        const ballSp = Math.hypot(bv.x, bv.z);
+        let who = -1, wd = Infinity;
+        for (let i = 0; i < players.length; i++) {
+          if (states[i].cooldown > 0 || pendingKick[i]) continue;
+          const d = Math.hypot(bp.x - players[i].pos.x, bp.z - players[i].pos.z);
+          if (d < 0.55 && d < wd) { wd = d; who = i; }
+        }
+        if (who >= 0 && ballSp > 3) {
+          const pl = players[who];
+          ball.setLinvel(
+            { x: pl.velX + (bv.x - pl.velX) * 0.15, y: -1.2, z: pl.velZ + (bv.z - pl.velZ) * 0.15 },
+            true,
+          );
+          const w = ball.angvel();
+          ball.setAngvel({ x: w.x * 0.2, y: w.y * 0.2, z: w.z * 0.2 }, true);
+          states[who].cooldown = tune.trapCooldown;
+          events.push({ type: 'trap', playerIndex: who, intensity: ballSp });
+        }
+      }
+    }
     return events;
   }
 

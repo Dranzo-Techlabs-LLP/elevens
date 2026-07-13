@@ -22,6 +22,7 @@ const CLIP_NAMES = {
   punch: 'Punch_Cross',         // keeper parry — fists the ball away
   throwrel: 'Spell_Simple_Shoot', // two-handed forward release (throw-in)
   ready: 'Crouch_Idle_Loop',    // keeper set stance, knees bent, ready
+  leap: 'Jump_Start',           // header: attack the ball in the air
 } as const;
 
 // nominal ground speed each loop was authored at (m/s) — playback timeScale
@@ -166,6 +167,7 @@ export class CharModel {
   private headLook = 0; // smoothed head yaw offset
   private bank = 0;     // smoothed lean-into-turn
   private kickT = 0;
+  private kickAmp = 1;
   private slideBlend = 0; // 0..1 smoothed slide pose weight
   private speedF = 0; // filtered speed for stable state picks
   // referee card ceremony: arm held high, card in hand
@@ -248,8 +250,14 @@ export class CharModel {
     this.actions.idle?.play();
   }
 
-  triggerKick() {
+  triggerKick(amp = 1) {
     this.kickT = 1;
+    this.kickAmp = amp; // volleys swing bigger than ground strikes
+  }
+
+  /** header: leap clip + a sharp head snap into the ball */
+  triggerHeader() {
+    this.playOneShot('leap', 0.55, 1.6);
   }
 
   /** play a REAL one-shot clip over locomotion, then fall back to it */
@@ -369,7 +377,7 @@ export class CharModel {
     // procedural kick overlay AFTER the mixer so it wins the pose
     if (this.kickT > 0) {
       this.kickT = Math.max(0, this.kickT - dt * 4.5);
-      const k = Math.sin(this.kickT * Math.PI);
+      const k = Math.sin(this.kickT * Math.PI) * this.kickAmp;
       // UE-style skeleton: swing the thigh forward, extend the calf
       this.thighR?.rotateZ(-1.15 * k);
       this.calfR?.rotateZ(0.35 * k);

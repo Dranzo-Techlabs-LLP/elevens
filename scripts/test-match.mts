@@ -687,5 +687,65 @@ const out: Record<string, unknown> = {};
   };
 }
 
+// 22-24. AERIAL TECHNIQUES: contact height picks header / volley; a
+//        dropping ball with no strike queued gets a chest cushion
+{
+  const strike = async (holdY: number) => {
+    const m = new Match(RAPIER, 30);
+    m.addPlayer('s', 'S', 0, false);
+    m.restart(180);
+    const p = m.players[0];
+    p.body.setTranslation({ x: 10, y: 0.91, z: 0 }, true);
+    p.yaw = 0;
+    let tech = '', vAfter = { x: 0, y: 0, z: 0 }, speed = 0;
+    for (let t = 0; t < 20 && !tech; t++) {
+      // hold the ball at the target height through the windup
+      if (!tech) {
+        m.ball.setTranslation({ x: 10.7, y: holdY, z: 0 }, true);
+        m.ball.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      }
+      const inp = idleFullInput();
+      inp.shoot = t < 3;
+      m.setInput(0, inp);
+      for (const e of m.step()) {
+        if (e.kind === 'kick' && e.detail === 'shoot') {
+          tech = e.tech ?? 'none';
+          const v = m.ball.linvel();
+          vAfter = { x: v.x, y: v.y, z: v.z };
+          speed = Math.hypot(v.x, v.y, v.z);
+        }
+      }
+    }
+    return { tech, speed: +speed.toFixed(1), vy: +vAfter.y.toFixed(1) };
+  };
+  const ground = await strike(0.11);
+  const volley = await strike(1.05);
+  const header = await strike(1.8);
+  out.aerialTech = {
+    ground, volley, header,
+    ok:
+      ground.tech === 'ground' &&
+      volley.tech === 'volley' && volley.speed > ground.speed &&
+      header.tech === 'header' && header.speed < ground.speed && header.vy < 0,
+  };
+
+  // CUSHION: a lobbed ball dropping onto a player (no strike queued) is
+  // chest-trapped — pace killed, ball down at the feet
+  const m = new Match(RAPIER, 30);
+  m.addPlayer('r', 'R', 0, false);
+  m.restart(180);
+  m.players[0].body.setTranslation({ x: 5, y: 0.91, z: 0 }, true);
+  m.ball.setTranslation({ x: 5.1, y: 1.9, z: 0 }, true);
+  m.ball.setLinvel({ x: 2, y: -2, z: 0 }, true);
+  const speedBefore = Math.hypot(2, 2);
+  let trapped = false;
+  for (let t = 0; t < 30; t++) { m.setInput(0, idleFullInput()); m.step(); }
+  const bv2 = m.ball.linvel();
+  const bp2 = m.ball.translation();
+  const dOwn = Math.hypot(bp2.x - m.players[0].pos.x, bp2.z - m.players[0].pos.z);
+  trapped = Math.hypot(bv2.x, bv2.z) < speedBefore && bp2.y < 0.5 && dOwn < 1.5;
+  out.aerialCushion = { ballNearFeet: +dOwn.toFixed(2), ballY: +bp2.y.toFixed(2), ok: trapped };
+}
+
 console.log(JSON.stringify(out, null, 1));
 process.exit(0);

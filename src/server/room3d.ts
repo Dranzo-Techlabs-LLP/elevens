@@ -239,7 +239,7 @@ export class Room3D {
       } else if (ev.kind === 'foul') {
         this.broadcast({ type: 'e3', kind: 'foul', id: this.match.meta[ev.playerIndex]?.id });
       } else if (ev.kind === 'kick') {
-        this.broadcast({ type: 'e3', kind: 'kick', id: this.match.meta[ev.playerIndex]?.id });
+        this.broadcast({ type: 'e3', kind: 'kick', id: this.match.meta[ev.playerIndex]?.id, tech: ev.tech });
       }
     }
     // per-client snapshot with their input ack (prediction reconciliation)

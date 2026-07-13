@@ -73,6 +73,8 @@ export interface MatchEvent {
   /** save events: dive side relative to the keeper's facing (-1 left,
    *  +1 right, 0 standing catch) */
   side?: number;
+  /** kick events: striking technique chosen by contact height */
+  tech?: 'ground' | 'volley' | 'header';
 }
 
 const KICK_RANGE = 1.9; // m from feet at the contact frame — generous enough
@@ -246,17 +248,24 @@ export function stepActions(ctx: ActionCtx, inputs: ActionInput[]) {
     // handled by match.ts gating inputs.
 
     // ---- scheduled strike lands at the contact frame ----
+    // The BALL'S HEIGHT at contact decides the technique (PES/FIFA model):
+    //   on the deck -> normal strike; knee-to-waist -> VOLLEY;
+    //   head height -> HEADER. Aerial balls are playable, not dead.
     if (st.pending && tick >= st.pending.tick) {
       const k = st.pending;
       st.pending = null;
       const d2 = Math.hypot(bp.x - pl.pos.x, bp.z - pl.pos.z);
-      if (d2 <= KICK_RANGE && ballPlayable) {
-        executeKick(ctx, i, k.kind, k.charge, k.yaw);
+      let tech: KickTech | null = null;
+      if (bp.y < TOUCH.ballMaxHeight + 0.4 || i === ctx.handHeldBy) tech = 'ground';
+      else if (bp.y < 1.35) tech = 'volley';
+      else if (bp.y <= 2.25) tech = 'header';
+      if (d2 <= KICK_RANGE && tech) {
+        executeKick(ctx, i, k.kind, k.charge, k.yaw, tech);
         st.kickCooldownUntil = tick + Math.round(0.4 * tickRate);
         // the ball is away — release it so the carry spring doesn't chase it
         ctx.poss.owner = -1;
         ctx.ctlStates[i].cooldown = 0.35;
-        ctx.events.push({ kind: 'kick', playerIndex: i, detail: k.kind });
+        ctx.events.push({ kind: 'kick', playerIndex: i, detail: k.kind, tech });
       }
     }
   }
@@ -279,12 +288,16 @@ function noiseSign(tick: number, salt: number): boolean {
   return (h & 1) === 1;
 }
 
+/** aerial technique by contact height — the PES/FIFA striking model */
+export type KickTech = 'ground' | 'volley' | 'header';
+
 function executeKick(
   ctx: ActionCtx,
   i: number,
   kind: 'pass' | 'through' | 'shoot' | 'lob' | 'clear',
   charge: number,
   yaw: number,
+  tech: KickTech = 'ground',
 ) {
   const { ball, players, teams } = ctx;
   const pl = players[i];
@@ -376,7 +389,27 @@ function executeKick(
     loft = Math.tan((26 * Math.PI) / 180);
   }
 
-  const vh = speed / Math.hypot(1, loft);
+  // ---- AERIAL TECHNIQUE (contact height decides HOW you strike) ----
+  if (tech === 'volley') {
+    // a ball met on the volley flies harder but wilder — the PES trade-off
+    if (kind === 'shoot') speed = Math.min(speed * 1.22, KICK.shotSpeedMax * 1.1);
+    const err = (noiseSign(ctx.tick, i * 3 + 1) ? 1 : -1) * (0.06 + 0.10 * (1 - charge * 0.5));
+    const a2 = Math.atan2(dirZ, dirX) + err;
+    dirX = Math.cos(a2);
+    dirZ = Math.sin(a2);
+    loft = Math.max(0.04, loft * 0.6); // struck mid-air: flatter trajectory
+  } else if (tech === 'header') {
+    // headers: less pace, and a headed SHOT is directed DOWN toward the
+    // line — the hardest ball for a keeper. Passes are cushioned nods.
+    speed *= kind === 'shoot' ? 0.6 : 0.5;
+    const err = (noiseSign(ctx.tick, i * 5 + 2) ? 1 : -1) * 0.07;
+    const a2 = Math.atan2(dirZ, dirX) + err;
+    dirX = Math.cos(a2);
+    dirZ = Math.sin(a2);
+    loft = kind === 'shoot' ? -0.25 : 0.08; // downward header on goal
+  }
+
+  const vh = speed / Math.hypot(1, Math.abs(loft));
   const vy = vh * loft;
   ball.setLinvel({ x: dirX * vh, y: vy, z: dirZ * vh }, true);
   // spin: backspin on lofted balls, side spin for curl

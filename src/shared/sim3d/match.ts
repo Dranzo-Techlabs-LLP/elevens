@@ -383,6 +383,7 @@ export class Match {
         this.ctlTune,
         this.meta.map((m) => m.bot),
         lockedTo,
+        this.actStates.map((s) => !!s.pending),
       );
       for (const ev of ctlEvents) this.lastTouch = ev.playerIndex;
       if (this.poss.owner >= 0) this.lastTouch = this.poss.owner;

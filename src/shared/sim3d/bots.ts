@@ -256,6 +256,18 @@ export function botThink(match: Match, i: number): PlayerFullInput {
     return inp;
   }
 
+  // ================= AERIAL BALL =================
+  // a dropping cross near me: ATTACK IT — header/volley toward goal if
+  // we're in their half, otherwise nod it clear. Contact height picks the
+  // technique in the sim; here we just commit to the strike.
+  if (ballLoose && bp.y > 1.0 && myDist < 2.0) {
+    seek(bp.x, bp.z, { stopAt: 0.15, mag: 0.6 });
+    const inTheirHalf = Math.sign(attackX) * bp.x > 0;
+    if (inTheirHalf) inp.shoot = match.tick % 10 < 3; // quick header/volley stab at goal
+    else pulse(inp, 'lob', match.tick, 10);           // nod/hook it clear
+    return inp;
+  }
+
   // ================= LOOSE BALL =================
   // a free ball near me is MINE to win — closest teammate goes, not just
   // the designated chaser watching from his zone
