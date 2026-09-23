@@ -295,6 +295,19 @@ const lights = buildLighting(renderer, scene, {
   tod, shadows: quality === 'high', L, W, hiRes: quality === 'high',
 });
 (window as any).__setTod = (t: TimeOfDay) => { saveTimeOfDay(t); location.reload(); };
+// menu: Match time segmented control (the sky/IBL are baked at load, so a
+// change reloads the page into the new lighting)
+for (const b of Array.from(document.querySelectorAll<HTMLButtonElement>('.seg [data-tod]'))) {
+  b.setAttribute('aria-checked', String(b.dataset.tod === tod));
+  b.addEventListener('click', () => {
+    const t = b.dataset.tod as TimeOfDay;
+    if (t === tod) return;
+    saveTimeOfDay(t);
+    const u = new URL(location.href);
+    u.searchParams.delete('tod');
+    location.href = u.toString();
+  });
+}
 
 if (composer) {
   composer.addPass(new RenderPass(scene, camera));

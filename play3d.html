@@ -93,6 +93,15 @@
   }
   .btn:hover { filter: brightness(1.06); box-shadow: 0 14px 30px rgba(217, 119, 6, 0.45), inset 0 1px 0 rgba(255,255,255,0.35); }
   .btn:active { transform: scale(0.97); }
+  /* segmented control (match time) */
+  .seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 4px;
+    border-radius: 10px; background: rgba(15,23,42,0.55); border: 1px solid rgba(148,163,184,0.18); }
+  .seg button { min-height: 40px; border: 0; border-radius: 7px; cursor: pointer; background: transparent;
+    color: #cbd5e1; font: 600 14px 'Chakra Petch', system-ui, sans-serif; letter-spacing: .04em;
+    transition: background 160ms ease-out, color 160ms ease-out; }
+  .seg button:hover { color: #f8fafc; }
+  .seg button:focus-visible { outline: 2px solid #d97706; outline-offset: 2px; }
+  .seg button[aria-checked="true"] { background: #15803d; color: #f8fafc; }
   .btn.green {
     color: #fff;
     background: linear-gradient(180deg, var(--primary-soft), var(--primary));
@@ -301,6 +310,14 @@
     <div class="field">
       <label for="name">Player name</label>
       <input id="name" placeholder="Enter your name" maxlength="12" autocomplete="off">
+    </div>
+    <div class="field">
+      <label id="tod-label">Match time</label>
+      <div class="seg" role="radiogroup" aria-labelledby="tod-label">
+        <button type="button" role="radio" data-tod="day">Day</button>
+        <button type="button" role="radio" data-tod="sunset">Sunset</button>
+        <button type="button" role="radio" data-tod="night">Night</button>
+      </div>
     </div>
     <button id="create" class="btn">CREATE MATCH</button>
     <div class="join-row">

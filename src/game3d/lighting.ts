@@ -41,23 +41,27 @@ export function saveTimeOfDay(t: TimeOfDay) {
 }
 
 const PRESETS = {
+  // azimuth: 0 = sun toward +z (behind the broadcast camera), which lights
+  // the players' faces the way a TV match is shot
   day: {
-    elevation: 50, azimuth: 205,
+    elevation: 50, azimuth: 28,
     turbidity: 2.6, rayleigh: 1.1, mie: 0.004, mieG: 0.78, clouds: 0.28,
-    keyColor: 0xfff1dc, keyIntensity: 2.6, hemiSky: 0xbfdcff, hemiGround: 0x3b6b2c, hemiIntensity: 0.35,
-    envIntensity: 0.9, exposure: 0.95, fog: 0xbcd6ea, fogNear: 90, fogFar: 320,
+    keyColor: 0xfff1dc, keyIntensity: 3.0, hemiSky: 0xbfdcff, hemiGround: 0x3b6b2c, hemiIntensity: 0.2,
+    // three's physical sky is bright HDR: at full strength its IBL swamps
+    // the sun (washed-out pitch, green-tinted bodies) — keep it a fill
+    envIntensity: 0.22, bgIntensity: 0.55, exposure: 0.95, fog: 0xbcd6ea, fogNear: 90, fogFar: 320,
   },
   sunset: {
-    elevation: 9, azimuth: 235,
+    elevation: 9, azimuth: 300,
     turbidity: 6.5, rayleigh: 2.6, mie: 0.006, mieG: 0.86, clouds: 0.38,
-    keyColor: 0xffb271, keyIntensity: 2.4, hemiSky: 0xf2c49b, hemiGround: 0x3a4f25, hemiIntensity: 0.4,
-    envIntensity: 0.85, exposure: 1.0, fog: 0xd9a47e, fogNear: 80, fogFar: 300,
+    keyColor: 0xffb271, keyIntensity: 2.6, hemiSky: 0xf2c49b, hemiGround: 0x3a4f25, hemiIntensity: 0.3,
+    envIntensity: 0.5, bgIntensity: 0.8, exposure: 1.0, fog: 0xd9a47e, fogNear: 80, fogFar: 300,
   },
   night: {
     elevation: -4.5, azimuth: 205,
     turbidity: 8, rayleigh: 3.2, mie: 0.005, mieG: 0.8, clouds: 0.18,
     keyColor: 0xf2f6ff, keyIntensity: 2.25, hemiSky: 0x6d7fa6, hemiGround: 0x243a22, hemiIntensity: 0.32,
-    envIntensity: 1.0, exposure: 1.08, fog: 0x0b1224, fogNear: 70, fogFar: 260,
+    envIntensity: 1.0, bgIntensity: 1.0, exposure: 1.08, fog: 0x0b1224, fogNear: 70, fogFar: 260,
   },
 } as const;
 
@@ -113,6 +117,7 @@ export function buildLighting(
   const cubeCam = new THREE.CubeCamera(1, 2000, bgRT);
   cubeCam.update(renderer, skyScene);
   scene.background = bgRT.texture;
+  scene.backgroundIntensity = P.bgIntensity;
 
   // ---- environment for IBL: sky + grass bounce (+ floodlight banks) ----
   const envScene = new THREE.Scene();
@@ -120,7 +125,7 @@ export function buildLighting(
   // lower hemisphere = the pitch: green bounce light onto everything
   const ground = new THREE.Mesh(
     new THREE.CircleGeometry(600, 32),
-    new THREE.MeshBasicMaterial({ color: opts.tod === 'night' ? 0x16391a : 0x2f6b2c }),
+    new THREE.MeshBasicMaterial({ color: opts.tod === 'night' ? 0x16391a : 0x1c3d1b }),
   );
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -2;
