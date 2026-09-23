@@ -67,7 +67,7 @@ export const newActionState = (): ActionState => ({
 });
 
 export interface MatchEvent {
-  kind: 'kick' | 'foul' | 'tackle' | 'slide' | 'save';
+  kind: 'kick' | 'foul' | 'tackle' | 'slide' | 'save' | 'windup';
   playerIndex: number;
   detail?: string;
   /** save events: dive side relative to the keeper's facing (-1 left,
@@ -75,6 +75,8 @@ export interface MatchEvent {
   side?: number;
   /** kick events: striking technique chosen by contact height */
   tech?: 'ground' | 'volley' | 'header';
+  /** goal events: index of the scorer (last touch of the scoring team) */
+  by?: number;
 }
 
 const KICK_RANGE = 1.9; // m from feet at the contact frame — generous enough
@@ -130,6 +132,9 @@ export function stepActions(ctx: ActionCtx, inputs: ActionInput[]) {
       const fire = (kind: 'pass' | 'through' | 'shoot' | 'lob', charge = 0) => {
         if (tick < st.kickCooldownUntil || st.pending) return;
         st.pending = { tick: tick + delayTicks, kind, charge, yaw: pl.yaw };
+        // the swing starts NOW (contact lands delayTicks later): clients
+        // animate the backswing in sync with the sim's contact frame
+        ctx.events.push({ kind: 'windup', playerIndex: i, detail: kind });
         // plant touch: settle the ball during the windup so the strike is
         // clean — how pros take a touch before hitting it
         if (distToBall < 1.4 && ballPlayable) {

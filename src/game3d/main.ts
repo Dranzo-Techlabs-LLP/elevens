@@ -15,9 +15,16 @@ import { BALL, MATCH, PITCH_5S, PLAYER } from '../shared/config3d';
 import { SimPlayer, defaultMoveTune } from '../shared/sim3d/player';
 import { HumanRig } from '../lab/rig';
 import { CharModel, charsReady, loadChars } from './chars';
-import { BloomEffect, EffectComposer, EffectPass, RenderPass, SMAAEffect, VignetteEffect } from 'postprocessing';
+import {
+  BloomEffect, EffectComposer, EffectPass, RenderPass, SMAAEffect,
+  ToneMappingEffect, ToneMappingMode, VignetteEffect,
+} from 'postprocessing';
 import { FX } from './fx';
 import { sfx } from './sfx';
+import { buildLighting, readTimeOfDay, saveTimeOfDay, type TimeOfDay } from './lighting';
+import { buildPitch } from './pitch';
+import { buildStadium } from './stadium';
+import { GoalNets } from './nets';
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
 const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -38,6 +45,7 @@ interface Snap {
   ack: number;
   ball: { x: number; y: number; z: number; vx: number; vy: number; vz: number };
   ref?: { x: number; z: number; yaw: number; speed: number };
+  restart?: { kind: string; taker: string } | null;
   players: {
     id: string; x: number; z: number; vx: number; vz: number; yaw: number;
     stamina: number; charge: number; stunned: boolean; sliding: boolean; shielding: boolean;
@@ -209,6 +217,7 @@ let serverOwnerId: string | null = null;
 let kickReleasedAt = -1e9;
 const ballVis = new THREE.Vector3(0, 0.11, 0);
 let prevActs = { pass: false, through: false, shoot: false, lob: false };
+let prevTackleKey = false;
 
 function initLocalSim() {
   localWorld = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
@@ -273,357 +282,88 @@ const composer = quality === 'high'
   : null;
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(0x9fd4f5, 80, 240);
-// gradient sky dome (zenith blue -> warm horizon)
-{
-  const c = document.createElement('canvas');
-  c.width = 2;
-  c.height = 512;
-  const g = c.getContext('2d')!;
-  const grad = g.createLinearGradient(0, 0, 0, 512);
-  grad.addColorStop(0, '#3d86c6');
-  grad.addColorStop(0.55, '#8ec9ef');
-  grad.addColorStop(0.8, '#cfe8f7');
-  grad.addColorStop(1, '#eef7dd');
-  g.fillStyle = grad;
-  g.fillRect(0, 0, 2, 512);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  const dome = new THREE.Mesh(
-    new THREE.SphereGeometry(320, 24, 12, 0, Math.PI * 2, 0, Math.PI * 0.55),
-    new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false }),
-  );
-  dome.position.y = -6;
-  scene.add(dome);
-}
-const camera = new THREE.PerspectiveCamera(42, 1, 0.05, 400); // tighter = TV lens
+const camera = new THREE.PerspectiveCamera(42, 1, 0.05, 600); // tighter = TV lens
 const BASE_FOV = 42;
 let fovPunch = 0; // goal moment: quick lens punch, decays to broadcast FOV
+
+// time of day: physically-based sky + image-based lighting (day / sunset /
+// night under floodlights). ?tod=day|sunset|night, remembered per browser.
+const tod: TimeOfDay = readTimeOfDay();
+const lights = buildLighting(renderer, scene, {
+  tod, shadows: quality === 'high', L, W, hiRes: quality === 'high',
+});
+(window as any).__setTod = (t: TimeOfDay) => { saveTimeOfDay(t); location.reload(); };
+
 if (composer) {
   composer.addPass(new RenderPass(scene, camera));
+  // (no SSAO: its normal pass renders billboards — name tags, crowd cards,
+  // nets — as solid quads and stamps dark rectangles behind them. Bodies
+  // are grounded by the shadow map + per-player contact shadows instead.)
   composer.addPass(new EffectPass(
     camera,
     new SMAAEffect(),
-    new BloomEffect({ intensity: 0.42, luminanceThreshold: 0.72, luminanceSmoothing: 0.25, mipmapBlur: true }),
-    new VignetteEffect({ darkness: 0.42, offset: 0.26 }),
+    new BloomEffect({
+      intensity: tod === 'night' ? 0.85 : 0.45,
+      luminanceThreshold: tod === 'night' ? 0.8 : 0.9,
+      luminanceSmoothing: 0.2, mipmapBlur: true,
+    }),
+    // tone mapping MUST live in the effect chain: the composer renders to
+    // a half-float buffer, where renderer.toneMapping is never applied
+    new ToneMappingEffect({ mode: ToneMappingMode.ACES_FILMIC }),
+    new VignetteEffect({ darkness: 0.38, offset: 0.28 }),
   ));
 }
 
-scene.add(new THREE.HemisphereLight(0xcfe4ff, 0x2e7a3b, 0.85));
-const sun = new THREE.DirectionalLight(0xffe6bd, 1.85); // late-afternoon warmth
-sun.position.set(-16, 19, 11);
-sun.castShadow = quality === 'high';
-sun.shadow.mapSize.set(4096, 4096); // 56m frustum -> ~14mm/texel: crisp player shadows
-sun.shadow.radius = 4;              // PCF blur: soft penumbra edge, no shimmer
-sun.shadow.bias = -0.0002;          // acne vs peter-panning balance
-sun.shadow.normalBias = 0.02;
-Object.assign(sun.shadow.camera, { left: -28, right: 28, top: 24, bottom: -24, near: 4, far: 80 });
-scene.add(sun);
+// pitch: broadcast turf (view-dependent mow stripes, blade detail, wear)
+buildPitch(scene, {
+  L, W, hiRes: quality === 'high', night: tod === 'night',
+  anisotropy: renderer.capabilities.getMaxAnisotropy(),
+});
 
-// pitch
-{
-  const texC = document.createElement('canvas');
-  texC.width = 2048; texC.height = 1024;
-  const tx = texC.getContext('2d')!;
-  const PX = 2048 / L; // px per meter
-  tx.fillStyle = '#2c9740'; tx.fillRect(0, 0, 2048, 1024); // richer base green
-  // PES cross-mow: lengthwise stripes AND faint widthwise bands — the
-  // alternating overlap reads as the classic broadcast checkerboard
-  tx.fillStyle = 'rgba(190,255,190,0.10)';
-  for (let i = 0; i < 10; i += 2) tx.fillRect(i * 204.8, 0, 204.8, 1024);
-  tx.fillStyle = 'rgba(180,255,180,0.05)';
-  for (let i = 0; i < 6; i += 2) tx.fillRect(0, i * 170.7, 2048, 170.7);
-  // grass grain: dark speckle + sparse sunlit blade highlights
-  for (let i = 0; i < 9000; i++) {
-    tx.fillStyle = `rgba(0,55,0,${Math.random() * 0.10})`;
-    tx.fillRect(Math.random() * 2048, Math.random() * 1024, 2.5, 2.5);
-  }
-  for (let i = 0; i < 3500; i++) {
-    tx.fillStyle = `rgba(215,255,205,${Math.random() * 0.07})`;
-    tx.fillRect(Math.random() * 2048, Math.random() * 1024, 1.5, 3);
-  }
-  // subtle edge falloff — TV cameras never show a uniformly lit pitch
-  const edge = tx.createRadialGradient(1024, 512, 480, 1024, 512, 1200);
-  edge.addColorStop(0, 'rgba(0,20,0,0)');
-  edge.addColorStop(1, 'rgba(0,25,0,0.16)');
-  tx.fillStyle = edge;
-  tx.fillRect(0, 0, 2048, 1024);
-  // ---- REGULATION MARKINGS, scaled from a full-size pitch to 40x20 ----
-  // px per meter is uniform (2048/40 == 1024/20), so we draw in meter space.
-  const S = 2048 / L;
-  const mm = (m: number) => m * S;
-  const LINE = mm(0.12); // 12cm lines
-  tx.strokeStyle = 'rgba(255,255,255,0.96)';
-  tx.fillStyle = 'rgba(255,255,255,0.96)';
-  tx.lineWidth = LINE;
-  tx.lineCap = 'butt';
-
-  // proportions derived from a 105x68 pitch, scaled to our L x W:
-  const PEN_DEPTH = (16.5 / 105) * L;   // 6.29m
-  const PEN_WIDTH = (40.3 / 68) * W;    // 11.85m
-  const SIX_DEPTH = (5.5 / 105) * L;    // 2.10m
-  const SIX_WIDTH = (18.3 / 68) * W;    // 5.38m
-  const SPOT = (11 / 105) * L;          // 4.19m
-  const CIRC_R = (9.15 / 105) * L;      // 3.49m
-  const CORNER_R = 0.6;
-
-  const inset = LINE / 2 + 1;
-  // touchlines + goal lines
-  tx.strokeRect(inset, inset, 2048 - inset * 2, 1024 - inset * 2);
-  // halfway line + center circle + center spot
-  tx.beginPath(); tx.moveTo(1024, inset); tx.lineTo(1024, 1024 - inset); tx.stroke();
-  tx.beginPath(); tx.arc(1024, 512, mm(CIRC_R), 0, Math.PI * 2); tx.stroke();
-  tx.beginPath(); tx.arc(1024, 512, mm(0.12), 0, Math.PI * 2); tx.fill();
-
-  for (const side of [0, 1]) {
-    const dir = side === 0 ? 1 : -1;              // drawing direction from the goal line
-    const gl = side === 0 ? inset : 2048 - inset; // goal line x (px)
-    const boxX = side === 0 ? gl : gl - mm(PEN_DEPTH);
-    // penalty area
-    tx.strokeRect(boxX, 512 - mm(PEN_WIDTH) / 2, mm(PEN_DEPTH), mm(PEN_WIDTH));
-    // goal area (6-yard box)
-    const sixX = side === 0 ? gl : gl - mm(SIX_DEPTH);
-    tx.strokeRect(sixX, 512 - mm(SIX_WIDTH) / 2, mm(SIX_DEPTH), mm(SIX_WIDTH));
-    // penalty spot
-    const spotX = gl + dir * mm(SPOT);
-    tx.beginPath(); tx.arc(spotX, 512, mm(0.12), 0, Math.PI * 2); tx.fill();
-    // penalty arc ("the D"): the part of the circle around the spot that
-    // lies OUTSIDE the penalty area
-    const cosA = (PEN_DEPTH - SPOT) / CIRC_R;     // where the circle meets the box edge
-    const a = Math.acos(Math.min(1, Math.max(-1, cosA)));
-    tx.beginPath();
-    if (side === 0) tx.arc(spotX, 512, mm(CIRC_R), -a, a);
-    else tx.arc(spotX, 512, mm(CIRC_R), Math.PI - a, Math.PI + a);
-    tx.stroke();
-  }
-
-  // corner quarter-arcs (proper quadrant per corner)
-  const cr = mm(CORNER_R);
-  tx.beginPath(); tx.arc(inset, inset, cr, 0, Math.PI / 2); tx.stroke();
-  tx.beginPath(); tx.arc(2048 - inset, inset, cr, Math.PI / 2, Math.PI); tx.stroke();
-  tx.beginPath(); tx.arc(2048 - inset, 1024 - inset, cr, Math.PI, Math.PI * 1.5); tx.stroke();
-  tx.beginPath(); tx.arc(inset, 1024 - inset, cr, Math.PI * 1.5, Math.PI * 2); tx.stroke();
-  const ptex = new THREE.CanvasTexture(texC);
-  ptex.colorSpace = THREE.SRGBColorSpace;
-  // full anisotropy: the broadcast camera grazes the pitch at a shallow
-  // angle — without this the far-half lines smear to mud
-  ptex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-  const pitch = new THREE.Mesh(new THREE.PlaneGeometry(L, W), new THREE.MeshLambertMaterial({ map: ptex }));
-  pitch.rotation.x = -Math.PI / 2;
-  pitch.receiveShadow = true;
-  scene.add(pitch);
-  const apron = new THREE.Mesh(new THREE.PlaneGeometry(300, 300), new THREE.MeshLambertMaterial({ color: 0x26702f }));
-  apron.rotation.x = -Math.PI / 2; apron.position.y = -0.02; apron.receiveShadow = true;
-  scene.add(apron);
-}
-
-// goals + boards + stands + lights
-function netGrid(w: number, h: number, step: number) {
-  const pts: number[] = [];
-  for (let x = 0; x <= w + 0.001; x += step) pts.push(x - w / 2, -h / 2, 0, x - w / 2, h / 2, 0);
-  for (let y = 0; y <= h + 0.001; y += step) pts.push(-w / 2, y - h / 2, 0, w / 2, y - h / 2, 0);
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
-  return new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.4 }));
-}
-{
-  const postMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.3 });
+// goal frames: glossy posts + crossbar, rear stanchions; the netting is a
+// cloth simulation (see nets.ts) that bulges when the ball hits it
+const nets = (() => {
+  const postMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.22, metalness: 0.05 });
   const gw = PITCH_5S.goalWidth, gh = PITCH_5S.goalHeight, gd = PITCH_5S.goalDepth;
   for (const sx of [-1, 1]) {
     const gx = sx * L / 2;
     for (const sz of [-1, 1]) {
-      const p = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, gh, 10), postMat);
+      const p = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, gh, 14), postMat);
       p.position.set(gx, gh / 2, sz * gw / 2);
       p.castShadow = true;
       scene.add(p);
+      // rear stanchion (post top -> ground at the back of the net)
+      const len = Math.hypot(gd, gh);
+      const st = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, len, 8), postMat);
+      st.position.set(gx + sx * gd / 2, gh / 2, sz * gw / 2);
+      st.rotation.z = sx * Math.atan2(gd, gh);
+      st.castShadow = true;
+      scene.add(st);
+      // ground bar along the base of the side netting
+      const gb = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, gd, 6), postMat);
+      gb.rotation.z = Math.PI / 2;
+      gb.position.set(gx + sx * gd / 2, 0.02, sz * gw / 2);
+      scene.add(gb);
     }
-    const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, gw, 10), postMat);
+    const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, gw + 0.1, 14), postMat);
     bar.rotation.x = Math.PI / 2;
     bar.position.set(gx, gh, 0);
     bar.castShadow = true;
     scene.add(bar);
-    const back = netGrid(gw, gh, 0.3);
-    back.rotation.y = Math.PI / 2;
-    back.position.set(gx + sx * gd, gh / 2, 0);
+    const back = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, gw, 6), postMat);
+    back.rotation.x = Math.PI / 2;
+    back.position.set(gx + sx * gd, 0.02, 0);
     scene.add(back);
-    const roof = netGrid(gd, gw, 0.3);
-    roof.rotation.set(-Math.PI / 2, 0, Math.PI / 2);
-    roof.position.set(gx + sx * gd / 2, gh, 0);
-    scene.add(roof);
-    // side nets + angled rear stanchions — the goal reads as a real box
-    for (const sz of [-1, 1]) {
-      const sideNet = netGrid(gd, gh, 0.3);
-      sideNet.position.set(gx + sx * gd / 2, gh / 2, sz * gw / 2);
-      scene.add(sideNet);
-      const stan = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.025, 0.025, Math.hypot(gd, gh), 8),
-        postMat,
-      );
-      stan.position.set(gx + sx * gd / 2, gh / 2, sz * gw / 2);
-      stan.rotation.z = sx * Math.atan2(gd, gh);
-      scene.add(stan);
-    }
   }
-  // ad boards ringing the pitch
-  const adC = document.createElement('canvas');
-  adC.width = 1024; adC.height = 64;
-  const adx = adC.getContext('2d')!;
-  const ads = ['E L E V E N S', 'DRANZO', '5 v 5', 'ELEVENS ARENA'];
-  for (let i = 0; i < 4; i++) {
-    adx.fillStyle = i % 2 ? '#0b3d91' : '#0f766e';
-    adx.fillRect(i * 256, 0, 256, 64);
-    adx.fillStyle = '#f8fafc';
-    adx.font = '700 30px system-ui';
-    adx.textAlign = 'center';
-    adx.textBaseline = 'middle';
-    adx.fillText(ads[i], i * 256 + 128, 34);
-  }
-  const adTex = new THREE.CanvasTexture(adC);
-  adTex.colorSpace = THREE.SRGBColorSpace;
-  adTex.wrapS = THREE.RepeatWrapping;
-  const mkBoard = (x: number, z: number, w2: number, rotY = 0) => {
-    const m = new THREE.MeshLambertMaterial({ map: adTex.clone() });
-    m.map!.repeat.set(Math.max(1, Math.round(w2 / 10)), 1);
-    const b = new THREE.Mesh(new THREE.BoxGeometry(w2, 0.9, 0.15), m);
-    b.position.set(x, 0.45, z);
-    b.rotation.y = rotY;
-    scene.add(b);
-  };
-  mkBoard(0, -W / 2 - 0.3, L + 2);
-  mkBoard(0, W / 2 + 0.3, L + 2, Math.PI);
-  mkBoard(-L / 2 - 0.9, 0, W + 1, Math.PI / 2);
-  mkBoard(L / 2 + 0.9, 0, W + 1, -Math.PI / 2);
+  return new GoalNets(scene, L, gw, gh, gd);
+})();
 
-  // corner flags
-  for (const [cxx, czz] of [[-L / 2, -W / 2], [L / 2, -W / 2], [-L / 2, W / 2], [L / 2, W / 2]]) {
-    const pole = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.02, 0.02, 1.5, 6),
-      new THREE.MeshLambertMaterial({ color: 0xf8fafc }),
-    );
-    pole.position.set(cxx, 0.75, czz);
-    const flag = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.35, 0.25),
-      new THREE.MeshLambertMaterial({ color: 0xef4444, side: THREE.DoubleSide }),
-    );
-    flag.position.set(cxx + 0.19, 1.32, czz);
-    scene.add(pole, flag);
-  }
-  // crowd stands (far side + ends)
-  const crowdC = document.createElement('canvas');
-  crowdC.width = 256; crowdC.height = 64;
-  const cx2 = crowdC.getContext('2d')!;
-  // structured SEAT ROWS (not noise): 8px rows, seats in blocks with aisle
-  // gaps, mixed fans/empty green seats — reads as a real stand
-  cx2.fillStyle = '#1d2634';
-  cx2.fillRect(0, 0, 256, 64);
-  const fanCols = ['#e2e8f0', '#fbbf24', '#60a5fa', '#f87171', '#94a3b8', '#fb923c', '#4ade80'];
-  for (let row = 0; row < 8; row++) {
-    const y = row * 8;
-    // row shadow line
-    cx2.fillStyle = 'rgba(0,0,0,0.35)';
-    cx2.fillRect(0, y + 6, 256, 2);
-    for (let sx2 = 0; sx2 < 256; sx2 += 4) {
-      if (sx2 % 64 < 3) continue; // aisles
-      const occupied = Math.random() < 0.82;
-      cx2.fillStyle = occupied
-        ? fanCols[(Math.random() * fanCols.length) | 0]
-        : '#14532d'; // empty green seat
-      cx2.fillRect(sx2, y + 1, 3, 5);
-    }
-  }
-  const crowdTex = new THREE.CanvasTexture(crowdC);
-  crowdTex.wrapS = crowdTex.wrapT = THREE.RepeatWrapping;
-  const stand = (w2: number, withRoof: boolean, tiersOverride?: number) => {
-    const g = new THREE.Group();
-    const tiers = tiersOverride ?? (withRoof ? 5 : 4);
-    for (let t = 0; t < tiers; t++) {
-      const m = new THREE.MeshLambertMaterial({ map: crowdTex.clone() });
-      m.map!.repeat.set(Math.round(w2 / 6), 1);
-      m.map!.offset.set(Math.random(), 0);
-      const s = new THREE.Mesh(new THREE.BoxGeometry(w2, 1.1, 1.5), m);
-      // depth grows along LOCAL +z = "away from the pitch" under every group
-      // rotation used below. (The old -z authoring flipped under rotation.y=π
-      // and marched the tiers + roof OVER the field — the dark plane that
-      // occluded the far touchline and made players look out of bounds.)
-      s.position.set(0, 0.55 + t * 1.05, t * 1.5);
-      g.add(s);
-    }
-    const wallMat = new THREE.MeshLambertMaterial({ color: 0x3f4a5a });
-    if (withRoof) {
-      const back = new THREE.Mesh(new THREE.BoxGeometry(w2, 6.8, 0.3), wallMat);
-      back.position.set(0, 3.4, 6.2);
-      g.add(back);
-      // roof only on the far grandstand — end roofs occluded the corners
-      const roof = new THREE.Mesh(
-        new THREE.BoxGeometry(w2, 0.22, 5.2),
-        new THREE.MeshLambertMaterial({ color: 0x3a4658 }),
-      );
-      roof.position.set(0, 6.95, 4.0);
-      g.add(roof);
-      // lit underside so the bowl doesn't read as a black maw
-      const under = new THREE.Mesh(
-        new THREE.PlaneGeometry(w2, 5.2),
-        new THREE.MeshBasicMaterial({ color: 0x2f3a4d }),
-      );
-      under.rotation.x = Math.PI / 2;
-      under.position.set(0, 6.82, 4.0);
-      g.add(under);
-      for (let px2 = -w2 / 2 + 2; px2 <= w2 / 2 - 2; px2 += Math.max(6, w2 / 6)) {
-        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 6.8, 6), wallMat);
-        post.position.set(px2, 3.4, 1.4); // front supports at the stand's leading edge
-        g.add(post);
-      }
-      // roof flag row (outer edge)
-      for (let fx2 = -w2 / 2 + 4; fx2 <= w2 / 2 - 4; fx2 += Math.max(8, w2 / 5)) {
-        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.4, 5), wallMat);
-        pole.position.set(fx2, 7.7, 5.0);
-        const flag = new THREE.Mesh(
-          new THREE.PlaneGeometry(0.7, 0.4),
-          new THREE.MeshLambertMaterial({ color: [0x15803d, 0xd97706, 0x3b82f6][(Math.abs(fx2) | 0) % 3], side: THREE.DoubleSide }),
-        );
-        flag.position.set(fx2 + 0.36, 8.15, 5.0);
-        g.add(pole, flag);
-      }
-    }
-    return g;
-  };
-  // full bowl: covered main stand, open ends, angled corner blocks
-  const s1 = stand(L + 8, true); s1.position.set(0, 0, -W / 2 - 2.4); s1.rotation.y = Math.PI; scene.add(s1);
-  const s3 = stand(W + 2, false); s3.position.set(-L / 2 - 3.6, 0, 0); s3.rotation.y = -Math.PI / 2; scene.add(s3);
-  const s4 = stand(W + 2, false); s4.position.set(L / 2 + 3.6, 0, 0); s4.rotation.y = Math.PI / 2; scene.add(s4);
-  for (const [cx4, cz4, ry] of [
-    [-L / 2 - 2.6, -W / 2 - 1.8, -Math.PI * 0.75],
-    [L / 2 + 2.6, -W / 2 - 1.8, Math.PI * 0.75],
-  ] as const) {
-    const c = stand(9, false, 4);
-    c.position.set(cx4, 0, cz4);
-    c.rotation.y = ry; // +local-z (depth) points away from the pitch
-    scene.add(c);
-  }
-  // dugouts on the near touchline (broadcast side)
-  for (const dx2 of [-6, 6]) {
-    const shel = new THREE.Group();
-    const mat = new THREE.MeshStandardMaterial({ color: 0x1c2740, roughness: 0.35, metalness: 0.2 });
-    const backW = new THREE.Mesh(new THREE.BoxGeometry(4.4, 1.5, 0.12), mat);
-    backW.position.set(0, 0.75, 0.55);
-    const roofP = new THREE.Mesh(new THREE.BoxGeometry(4.4, 0.1, 1.5), new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.25, metalness: 0.4, transparent: true, opacity: 0.9 }));
-    roofP.position.set(0, 1.55, 0);
-    const bench = new THREE.Mesh(new THREE.BoxGeometry(4.0, 0.12, 0.45), new THREE.MeshLambertMaterial({ color: 0x475569 }));
-    bench.position.set(0, 0.5, 0.28);
-    shel.add(backW, roofP, bench);
-    shel.position.set(dx2, 0, W / 2 + 1.3);
-    scene.add(shel);
-  }
-  // floodlights
-  for (const [fx, fz] of [[-L / 2 - 4, -W / 2 - 4], [L / 2 + 4, -W / 2 - 4], [-L / 2 - 4, W / 2 + 4], [L / 2 + 4, W / 2 + 4]]) {
-    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.12, 12, 8), new THREE.MeshLambertMaterial({ color: 0x475569 }));
-    pole.position.set(fx, 6, fz);
-    const lamp = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1, 0.3), new THREE.MeshBasicMaterial({ color: 0xfffbe8 }));
-    lamp.position.set(fx, 12.2, fz);
-    lamp.lookAt(0, 0, 0);
-    scene.add(pole, lamp);
-  }
-}
+// the bowl: raked stands, a living instanced crowd, floodlight towers,
+// animated LED boards, dugouts
+const stadium = buildStadium(scene, {
+  L, W, night: tod === 'night', hiRes: quality === 'high',
+  towers: lights.towers, teamColors: [0x2563eb, 0xdc2626],
+});
 
 // ball visual
 const ballMesh = (() => {
@@ -670,7 +410,7 @@ let crowdSent = -1; // last level pushed to sfx (ramps are scheduled; don't spam
 
 // player models — real rigged characters when the GLB loaded, procedural
 // fallback otherwise. Both expose the same update/trigger surface.
-interface Model { rig: HumanRig | CharModel; label: THREE.Sprite; ring: THREE.Mesh; ringMat: THREE.MeshBasicMaterial; }
+interface Model { rig: HumanRig | CharModel; label: THREE.Sprite; ring: THREE.Mesh; ringMat: THREE.MeshBasicMaterial; cursor: THREE.Mesh; }
 const models = new Map<string, Model>();
 let refModel: CharModel | null = null;
 (window as any).__models = models; // debug/verification hook
@@ -711,25 +451,44 @@ const blobShadow = (() => {
   };
 })();
 
+// shirt numbers: keepers wear 1, outfielders take a realistic squad pool
+const SQUAD_NUMBERS = [9, 10, 7, 11, 8, 4, 5, 6, 3, 2, 14, 17];
+const nextNumber: Record<'A' | 'B', number> = { A: 0, B: 0 };
+const shirtNumber = new Map<string, number>();
 function getModel(id: string, name: string, team: 'A' | 'B', keeper = false) {
   let m = models.get(id);
   if (!m) {
     let seed = 0;
     for (let i = 0; i < id.length; i++) seed = (seed * 31 + id.charCodeAt(i)) | 0;
+    let num = shirtNumber.get(id);
+    if (num === undefined) {
+      num = keeper ? 1 : SQUAD_NUMBERS[nextNumber[team]++ % SQUAD_NUMBERS.length];
+      shirtNumber.set(id, num);
+    }
     const rig = charsReady()
-      ? new CharModel(team, seed, keeper)
+      ? new CharModel(team, seed, keeper, { number: num, name })
       : new HumanRig(team === 'A' ? 0x2563eb : 0xdc2626, seed);
     rig.group.add(blobShadow());
     scene.add(rig.group);
     const lb = label(name);
     lb.position.y = 2.15;
     rig.group.add(lb);
+    // PES cursor: a floating team-colored arrow over YOUR player
+    const cursor = new THREE.Mesh(
+      new THREE.ConeGeometry(0.16, 0.3, 3),
+      new THREE.MeshBasicMaterial({ color: team === 'A' ? 0x60a5fa : 0xf87171, depthTest: false, transparent: true }),
+    );
+    cursor.rotation.x = Math.PI; // point down at the player
+    cursor.position.y = 2.25;
+    cursor.renderOrder = 10;
+    cursor.visible = false;
+    rig.group.add(cursor);
     const ringMat = new THREE.MeshBasicMaterial({ color: 0xfacc15, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false });
     const ring = new THREE.Mesh(new THREE.RingGeometry(0.55, 0.68, 24), ringMat);
     ring.rotation.x = -Math.PI / 2;
     ring.position.y = 0.02;
     rig.group.add(ring);
-    m = { rig, label: lb, ring, ringMat };
+    m = { rig, label: lb, ring, ringMat, cursor };
     models.set(id, m);
   }
   return m;
@@ -842,6 +601,18 @@ function onMsg(m: any) {
         fovPunch = 1; // broadcast lens punch
         // confetti erupts at the goal the ball just crossed
         fx.goalBurst(Math.sign(ballVis.x) * (L / 2 - 0.6), Math.max(-2.5, Math.min(2.5, ballVis.z)));
+        // the scoring side's end of the stadium erupts
+        stadium.celebrate(m.team === 'A' ? 0 : 1);
+        // the scorer wheels away arms wide; his teammates' arms go up
+        const scorer = m.scorer as string | null;
+        schedule(scorer === myId ? 0 : INTERP_MS, () => {
+          for (const [id, mdl] of models) {
+            if (!('triggerAction' in mdl.rig)) continue;
+            const rig = mdl.rig as CharModel;
+            if (id === scorer) rig.triggerAction('celebrate');
+            else if ((lobbyTeams.get(id) ?? (id.startsWith('bot-1') ? 'B' : 'A')) === m.team) rig.triggerArms();
+          }
+        });
       }
       if (m.kind === 'kickoff') { winner = null; banner('KICKOFF', 900); sfx.whistle('kickoff'); }
       if (m.kind === 'end') { winner = m.winner; sfx.whistle('full'); }
@@ -869,8 +640,9 @@ function onMsg(m: any) {
         }
       }
       if (m.kind === 'throw' && m.id) {
+        // normally already playing (started on the windup); fallback only
         const mdl = models.get(m.id);
-        if (mdl && 'triggerThrow' in mdl.rig) (mdl.rig as any).triggerThrow();
+        if (mdl && 'triggerThrow' in mdl.rig && !(mdl.rig as CharModel).acting) (mdl.rig as CharModel).triggerThrow();
       }
       if (m.kind === 'freekick') { banner('FREE KICK', 1400); sfx.whistle('foul'); }
       if (m.kind === 'advantage') banner('ADVANTAGE — PLAY ON', 1200);
@@ -879,19 +651,39 @@ function onMsg(m: any) {
         refModel?.showCard(m.color === 'red' ? 'red' : 'yellow');
         sfx.card();
       }
+      if (m.kind === 'windup' && m.id && m.id !== myId) {
+        // remote backswing: start it when his RENDERED body gets there
+        const id = m.id, what = m.what;
+        schedule(INTERP_MS, () => startTechnique(id, what));
+      }
+      if (m.kind === 'tackle' && m.id && m.id !== myId) {
+        const id = m.id;
+        schedule(INTERP_MS, () => {
+          const mdl = models.get(id);
+          if (mdl && 'triggerAction' in mdl.rig) (mdl.rig as CharModel).triggerAction('tackle');
+        });
+      }
       if (m.kind === 'kick' && m.id) {
-        const mdl = models.get(m.id);
-        if (mdl) {
-          const rig = mdl.rig as any;
-          if (m.tech === 'header' && rig.triggerHeader) rig.triggerHeader();      // leap + nod
-          else if (m.tech === 'volley' && rig.triggerKick) rig.triggerKick(1.5);  // big mid-air swing
-          else if (rig.triggerKick) {
-            rig.triggerKick();
-            const p = mdl.rig.group.position;
-            fx.kickPuff(p.x, p.z); // turf chips only for grounded strikes
+        // CONTACT: effects land with the rendered ball (remote = delayed);
+        // the swing itself was started by the windup — only fall back to a
+        // strike animation if that got missed
+        const id = m.id, tech = m.tech;
+        const land = () => {
+          const mdl = models.get(id);
+          if (mdl) {
+            const rig = mdl.rig as any;
+            if (rig.acting === false) {
+              if (tech === 'header') rig.triggerHeader?.();
+              else rig.triggerKick?.(tech === 'volley' ? 1.5 : 1);
+            }
+            if (tech !== 'header' && tech !== 'volley') {
+              const p = mdl.rig.group.position;
+              fx.kickPuff(p.x, p.z); // turf chips only for grounded strikes
+            }
           }
-        }
-        sfx.kick(m.tech === 'header' ? 0.35 : 0.65);
+          sfx.kick(tech === 'header' ? 0.35 : 0.65);
+        };
+        if (id === myId) land(); else schedule(INTERP_MS, land);
       }
       break;
     case 'error':
@@ -939,6 +731,57 @@ function sample() {
   };
 }
 
+// bots get squad-style surnames on their shirts and tags (fictional)
+const SURNAMES = [
+  'MORETTI', 'OKAFOR', 'LINDQVIST', 'NAKAMURA', 'OSEI', 'PETROV', 'QUINTERO', 'RAHMAN',
+  'VARGA', 'WEBER', 'YILMAZ', 'ZIELINSKI', 'ADEBAYO', 'DUBOIS', 'EKSTROM', 'FARIA',
+  'GALLO', 'HALVORSEN', 'IBARRA', 'JANSEN', 'KOVAC', 'LAURENT', 'MENSAH', 'NOVAK',
+];
+const botNames = new Map<string, string>();
+const usedNames = new Set<string>();
+function botName(id: string) {
+  const known = botNames.get(id);
+  if (known) return known;
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 131 + id.charCodeAt(i)) >>> 0;
+  // probe for an unused surname: no two players share a shirt name
+  let k = h % SURNAMES.length;
+  for (let n = 0; n < SURNAMES.length && usedNames.has(SURNAMES[k]); n++) k = (k + 1) % SURNAMES.length;
+  const name = SURNAMES[k];
+  usedNames.add(name);
+  botNames.set(id, name);
+  return name;
+}
+
+// debug/verification: slow-motion for the character layer (?anim=0.1 or
+// window.__animScale = 0.1) — lets a strike be inspected frame by frame
+let animScale = Number(new URLSearchParams(location.search).get('anim') ?? 1) || 1;
+(window as any).__setAnimScale = (v: number) => { animScale = v; };
+
+// remote animation triggers are delayed by the interpolation buffer, so a
+// remote player's swing lands exactly when his RENDERED body reaches the ball
+const animQueue: { at: number; fn: () => void }[] = [];
+function schedule(delayMs: number, fn: () => void) {
+  animQueue.push({ at: performance.now() + delayMs, fn });
+}
+/** which technique a strike should play, by the ball's height at contact */
+function techniqueFor(kind: string, ballY: number) {
+  if (ballY > 1.35) return 'header';
+  if (ballY > 0.6) return 'volley';
+  return kind === 'shoot' ? 'shot' : kind;
+}
+function startTechnique(id: string, kind: string) {
+  const mdl = models.get(id);
+  if (!mdl || !('triggerAction' in mdl.rig)) return;
+  const p = mdl.rig.group.position;
+  const rig = mdl.rig as CharModel;
+  // a throw-in taker's "kick" is the two-handed throw from over his head
+  if (rig.throwReady) { rig.triggerAction('throw'); return; }
+  // a swing at thin air 10m from the ball looks silly: only near the ball
+  if (Math.hypot(ballVis.x - p.x, ballVis.z - p.z) > 2.6) return;
+  rig.triggerAction(techniqueFor(kind, ballVis.y));
+}
+
 // ---------------- main loop ----------------
 const teamOf = new Map<string, 'A' | 'B'>();
 let lastFrame = performance.now();
@@ -971,8 +814,24 @@ function frame() {
     const actNow = readInput();
     const acts = { pass: actNow.pass, through: actNow.through, shoot: actNow.shoot, lob: actNow.lob } as any;
     for (const k of Object.keys(prevActs) as (keyof typeof prevActs)[]) {
-      if (prevActs[k] && !acts[k]) kickReleasedAt = now;
+      if (prevActs[k] && !acts[k]) {
+        kickReleasedAt = now;
+        // predicted: MY swing starts on release, in step with my sim's
+        // contact frame (no round trip)
+        if (myId && playing) startTechnique(myId, k);
+      }
       prevActs[k] = !!acts[k];
+    }
+    if (actNow.tackle && !prevTackleKey && myId && playing) {
+      const mdl = models.get(myId);
+      if (mdl && 'triggerAction' in mdl.rig && Math.hypot(ballVis.x - myVisX, ballVis.z - myVisZ) < 1.8) {
+        (mdl.rig as CharModel).triggerAction('tackle');
+      }
+    }
+    prevTackleKey = !!actNow.tackle;
+    // run due remote animation triggers
+    for (let i = animQueue.length - 1; i >= 0; i--) {
+      if (animQueue[i].at <= now) { animQueue[i].fn(); animQueue.splice(i, 1); }
     }
     const meHolding = !!view.latest.players.find((p) => p.id === myId)?.holding;
     const iCarry =
@@ -1017,7 +876,9 @@ function frame() {
     // lean in as play reaches either end
     const bSpd = Math.hypot(view.latest.ball.vx, view.latest.ball.vy, view.latest.ball.vz);
     fx.update(dtReal, ballVis.x, ballVis.y, ballVis.z, bSpd);
+    nets.update(dtReal, ballVis, BALL.radius);
     const crowdWant = 0.3 + 0.45 * Math.min(1, Math.abs(ballVis.x) / (L / 2));
+    stadium.update(dtReal, crowdWant);
     if (Math.abs(crowdWant - crowdSent) > 0.04) {
       sfx.setCrowd(crowdWant);
       crowdSent = crowdWant;
@@ -1032,7 +893,7 @@ function frame() {
       const team: 'A' | 'B' = p.id.startsWith('bot-1') ? 'B' : p.id.startsWith('bot-0') ? 'A' : (lobbyTeams.get(p.id) ?? (isMe ? myTeam : 'A'));
       const name = isMe
         ? (nameInput.value.trim() || 'You')
-        : (lobbyNames.get(p.id) ?? (p.id.startsWith('bot-') ? p.id.replace(/bot-\d-/, 'Bot ') : p.id));
+        : (lobbyNames.get(p.id) ?? (p.id.startsWith('bot-') ? botName(p.id) : p.id));
       const m = getModel(p.id, name, team, !!p.keeper);
       // OWN player renders from the local prediction, INTERPOLATED between
       // sim ticks (alpha = accumulator progress) with filtered yaw/speed —
@@ -1063,7 +924,14 @@ function frame() {
       m.rig.group.position.set(px, 0, pz);
       m.rig.group.rotation.y = -pyaw;
       m.rig.extraPitch = p.sliding ? -1.15 : p.stunned ? 0.35 : 0;
-      m.rig.update(dtReal, {
+      // own name tag hides in the chase/first-person cams (it floats right
+      // in front of the lens); everyone else's stays
+      // PES presentation: AI players carry no floating names; humans do;
+      // YOUR player gets the team cursor instead of a name tag
+      m.label.visible = !isMe && !p.id.startsWith('bot-');
+      m.cursor.visible = isMe && camMode !== 2;
+      if (m.cursor.visible) m.cursor.position.y = 2.25 + Math.sin(now / 180) * 0.05;
+      m.rig.update(dtReal * animScale, {
         speed: spd,
         yawRate: isMe && localMe ? localMe.yawRate : 0,
         stamina: p.stamina,
@@ -1072,6 +940,8 @@ function frame() {
         stunned: p.stunned,
         holding: p.holding,
         ready: !!p.keeper && !p.holding && Math.hypot(ballVis.x - px, ballVis.z - pz) < 11,
+        hasBall: view.latest.owner === p.id && !p.holding,
+        throwHold: view.latest.restart?.kind === 'throwin' && view.latest.restart.taker === p.id,
         lookYaw: Math.atan2(ballVis.z - pz, ballVis.x - px),
         bodyYaw: pyaw,
       } as any);

@@ -207,7 +207,10 @@ export class Room3D {
     const snap = this.match.snapshot();
     for (const ev of events) {
       if (ev.detail === 'goal') {
-        this.broadcast({ type: 'e3', kind: 'goal', team: ev.playerIndex === 0 ? 'A' : 'B', score: snap.score });
+        this.broadcast({
+          type: 'e3', kind: 'goal', team: ev.playerIndex === 0 ? 'A' : 'B', score: snap.score,
+          scorer: ev.by !== undefined && ev.by >= 0 ? this.match.meta[ev.by]?.id : null,
+        });
       } else if (ev.detail === 'fulltime') {
         const [a, b] = snap.score;
         this.broadcast({ type: 'e3', kind: 'end', winner: a > b ? 'A' : b > a ? 'B' : 'draw', score: snap.score });
@@ -236,6 +239,11 @@ export class Room3D {
         });
       } else if (ev.detail === 'play-on') {
         // silent resume after a free kick pause — no banner
+      } else if (ev.kind === 'windup') {
+        // backswing starts now; contact lands ~140ms later on every client
+        this.broadcast({ type: 'e3', kind: 'windup', id: this.match.meta[ev.playerIndex]?.id, what: ev.detail });
+      } else if (ev.kind === 'tackle') {
+        this.broadcast({ type: 'e3', kind: 'tackle', id: this.match.meta[ev.playerIndex]?.id });
       } else if (ev.kind === 'foul') {
         this.broadcast({ type: 'e3', kind: 'foul', id: this.match.meta[ev.playerIndex]?.id });
       } else if (ev.kind === 'kick') {

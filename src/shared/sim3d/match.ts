@@ -46,6 +46,8 @@ export interface MatchSnapshot {
   owner: string | null; // id of the player with close control (carry)
   ball: { x: number; y: number; z: number; vx: number; vy: number; vz: number };
   ref: { x: number; z: number; yaw: number; speed: number };
+  /** active dead-ball restart (throw-in hold pose, taker hints) */
+  restart: { kind: RestartKind; taker: string } | null;
   players: {
     id: string;
     x: number;
@@ -141,12 +143,8 @@ export class Match {
     );
     // REAL FOOTBALL BOUNDARIES: no boards. The ball crossing a line is out
     // of play and restarts per the laws (throw-in / corner / goal kick).
-    // Only the goal frame, a net-back stop, and the player-only mouth seals
+    // Only the goal frame, its netting, and the player-only mouth seals
     // remain physical.
-    const wall = (x: number, z: number, hx: number, hz: number) => {
-      const b = this.world.createRigidBody(R.RigidBodyDesc.fixed().setTranslation(x, 1, z));
-      this.world.createCollider(R.ColliderDesc.cuboid(hx, 1, hz).setRestitution(0.55), b);
-    };
     // PLAYER-ONLY seals across the goal mouths (group 0x8): the ball sails
     // through into the net, players cannot — physical backup to the
     // position clamp in SimPlayer
@@ -160,9 +158,28 @@ export class Match {
       );
     }
     const gapZ = PITCH_5S.goalWidth / 2;
+    // NETTING: soft stops that absorb the ball (a real net kills its pace,
+    // it doesn't ping it back out). The back stop sits 0.45m behind the
+    // visual net so the rendered cloth can bulge around the ball; side and
+    // roof netting keep a ball that's in, in.
+    const net = (x: number, y: number, z: number, hx: number, hy: number, hz: number) => {
+      const b = this.world.createRigidBody(R.RigidBodyDesc.fixed().setTranslation(x, y, z));
+      this.world.createCollider(
+        R.ColliderDesc.cuboid(hx, hy, hz).setRestitution(0.08).setFriction(0.9),
+        b,
+      );
+    };
+    const GD = PITCH_5S.goalDepth, GH = PITCH_5S.goalHeight;
     for (const sx of [-1, 1]) {
-      // net-back stops the ball behind the goal line (a goal stays a goal)
-      wall(sx * (L / 2 + PITCH_5S.goalDepth + 0.2), 0, 0.15, gapZ + 0.3);
+      const inner = L / 2 + 0.06, outer = L / 2 + GD + 0.45;
+      const midX = sx * (inner + outer) / 2, halfX = (outer - inner) / 2;
+      net(sx * (outer + 0.15), GH / 2, 0, 0.15, GH / 2 + 0.1, gapZ + 0.35); // back
+      // side + roof netting are THIN: a ball skimming the outside of the
+      // frame glances off and goes out of play, never pings back into it
+      for (const sz of [-1, 1]) net(midX, GH / 2, sz * (gapZ + 0.14), halfX, GH / 2, 0.02);
+      net(midX, GH + 0.1, 0, halfX, 0.02, gapZ + 0.16);
+    }
+    for (const sx of [-1, 1]) {
       // crossbar
       const bar = this.world.createRigidBody(
         R.RigidBodyDesc.fixed().setTranslation(sx * L / 2, PITCH_5S.goalHeight, 0),
@@ -508,6 +525,7 @@ export class Match {
 
       // aero + integrate
       this.applyBallAero(dt);
+      this.netDrag(dt);
       this.world.step();
 
       // goals: detect the actual LINE CROSSING (interpolated between ticks)
@@ -568,6 +586,7 @@ export class Match {
         this.events.push({ kind: 'kick', playerIndex: -1, detail: 'fulltime' });
       }
     } else {
+      this.netDrag(dt);
       this.world.step(); // let the ball settle during pauses
     }
 
@@ -949,7 +968,10 @@ export class Match {
     this.kickoffTeam = (1 - team) as 0 | 1; // conceding side restarts
     this.phase = 'goal';
     this.pauseUntil = this.tick + Math.round(2.2 * this.tickRate);
-    this.events.push({ kind: 'kick', playerIndex: team, detail: 'goal' });
+    // the scorer: last touch, if it was one of ours (an own goal credits
+    // nobody on the scoring side)
+    const by = this.lastTouch >= 0 && this.meta[this.lastTouch].team === team ? this.lastTouch : -1;
+    this.events.push({ kind: 'kick', playerIndex: team, detail: 'goal', by });
   }
 
   restart(seconds: number) {
@@ -957,6 +979,17 @@ export class Match {
     this.timeLeft = seconds;
     this.kickoff();
     this.phase = 'playing';
+  }
+
+  /** a ball inside the goal is in the NET: mesh drag kills its pace fast,
+   *  so it drops and dies in the net like the real thing */
+  private netDrag(dt: number) {
+    const bp = this.ball.translation();
+    if (Math.abs(bp.x) > L / 2 + 0.15 && Math.abs(bp.z) < PITCH_5S.goalWidth / 2 + 0.2 && bp.y < PITCH_5S.goalHeight + 0.2) {
+      const v = this.ball.linvel();
+      const k = Math.exp(-4.5 * dt);
+      this.ball.setLinvel({ x: v.x * k, y: v.y, z: v.z * k }, true);
+    }
   }
 
   private applyBallAero(dt: number) {
@@ -1001,6 +1034,9 @@ export class Match {
       score: [this.score[0], this.score[1]],
       timeLeft: Math.max(0, Math.ceil(this.timeLeft)),
       owner: this.poss.owner >= 0 ? this.meta[this.poss.owner].id : null,
+      restart: this.restartState && this.restartState.taker >= 0
+        ? { kind: this.restartState.kind, taker: this.meta[this.restartState.taker].id }
+        : null,
       ball: { x: r1(bp.x), y: r1(bp.y), z: r1(bp.z), vx: r1(bv.x), vy: r1(bv.y), vz: r1(bv.z) },
       ref: {
         x: r1(this.ref.x),
