@@ -25,6 +25,8 @@ import { buildLighting, readTimeOfDay, saveTimeOfDay, type TimeOfDay } from './l
 import { buildPitch } from './pitch';
 import { buildStadium } from './stadium';
 import { GoalNets } from './nets';
+import { buildBall } from './ball';
+import { Recorder, ReplayDirector, type RBody } from './replay';
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
 const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -367,16 +369,7 @@ const stadium = buildStadium(scene, {
 
 // ball visual
 const ballMesh = (() => {
-  const c = document.createElement('canvas');
-  c.width = 128; c.height = 64;
-  const x = c.getContext('2d')!;
-  x.fillStyle = '#fafafa'; x.fillRect(0, 0, 128, 64);
-  x.fillStyle = '#111827';
-  for (let i = 0; i < 10; i++) { x.beginPath(); x.arc((i % 5) * 26 + (i > 4 ? 13 : 6), ((i / 5) | 0) * 32 + 14, 6, 0, 7); x.fill(); }
-  const m = new THREE.Mesh(
-    new THREE.SphereGeometry(BALL.radius, 22, 16),
-    new THREE.MeshStandardMaterial({ map: new THREE.CanvasTexture(c), roughness: 0.35 }),
-  );
+  const m = buildBall(BALL.radius, quality === 'high');
   m.castShadow = quality === 'high';
   scene.add(m);
   return m;
@@ -410,8 +403,50 @@ let crowdSent = -1; // last level pushed to sfx (ramps are scheduled; don't spam
 
 // player models — real rigged characters when the GLB loaded, procedural
 // fallback otherwise. Both expose the same update/trigger surface.
-interface Model { rig: HumanRig | CharModel; label: THREE.Sprite; ring: THREE.Mesh; ringMat: THREE.MeshBasicMaterial; cursor: THREE.Mesh; }
+interface Model {
+  rig: HumanRig | CharModel; label: THREE.Sprite; ring: THREE.Mesh; ringMat: THREE.MeshBasicMaterial; cursor: THREE.Mesh;
+  /** night: four long faint shadows, one away from each floodlight tower */
+  radial: THREE.Object3D[] | null;
+  prevYaw: number; yawRate: number;
+}
 const models = new Map<string, Model>();
+
+// ---- goal replays: record what was rendered, play it back after goals ----
+const recorder = new Recorder();
+const director = new ReplayDirector();
+let pendingReplay: { at: number; goalAt: number; side: number } | null = null;
+const rigIds = new WeakMap<object, string>();
+CharModel.onAction = (rig, kind, arg) => {
+  if (director.active) return; // never re-log the replay's own playback
+  const id = rigIds.get(rig);
+  if (id) recorder.log({ t: performance.now(), id, kind, arg });
+};
+const replayUI = (() => {
+  const st = document.createElement('style');
+  st.textContent = `
+    #replay-ui { position: fixed; inset: 0; pointer-events: none; z-index: 6; }
+    #replay-ui .rb { position: absolute; left: 0; right: 0; height: 9vh; background: #000;
+      transition: transform 260ms cubic-bezier(.2,.8,.2,1); }
+    #replay-ui .rb.top { top: 0; transform: translateY(-100%); }
+    #replay-ui .rb.bot { bottom: 0; transform: translateY(100%); }
+    #replay-ui.on .rb { transform: translateY(0); }
+    #replay-ui .rbadge { position: absolute; top: calc(9vh + 14px); right: 18px;
+      font: 700 15px 'Russo One', system-ui, sans-serif; letter-spacing: .18em; color: #0f172a;
+      background: #d97706; padding: 6px 12px 5px; border-radius: 3px; opacity: 0;
+      transform: translateX(12px); transition: opacity 200ms, transform 260ms; }
+    #replay-ui.on .rbadge { opacity: 1; transform: none; }
+    @media (prefers-reduced-motion: reduce) { #replay-ui .rb, #replay-ui .rbadge { transition: none; } }`;
+  document.head.appendChild(st);
+  const el = document.createElement('div');
+  el.id = 'replay-ui';
+  el.innerHTML = '<div class="rb top"></div><div class="rb bot"></div><div class="rbadge">REPLAY</div>';
+  document.body.appendChild(el);
+  return el;
+})();
+(window as any).__director = director; // debug/verification hook
+function setReplayUI(on: boolean) {
+  replayUI.classList.toggle('on', on);
+}
 let refModel: CharModel | null = null;
 (window as any).__models = models; // debug/verification hook
 (window as any).__ref = () => refModel;
@@ -427,6 +462,55 @@ function label(text: string) {
   s.scale.set(1.9, 0.42, 1);
   return s;
 }
+// PES night signature: under four corner floodlights every player throws
+// four long, faint shadows fanning out from his feet. Cheap decals, updated
+// per frame (direction + length follow the player around the pitch).
+const radialShadowMat = (() => {
+  const c = document.createElement('canvas');
+  c.width = 64; c.height = 256;
+  const x = c.getContext('2d')!;
+  const gy = x.createLinearGradient(0, 256, 0, 0);
+  gy.addColorStop(0, 'rgba(0,0,0,0.42)');
+  gy.addColorStop(0.55, 'rgba(0,0,0,0.16)');
+  gy.addColorStop(1, 'rgba(0,0,0,0)');
+  x.fillStyle = gy;
+  x.beginPath();
+  x.ellipse(32, 128, 26, 128, 0, 0, Math.PI * 2);
+  x.fill();
+  return new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false });
+})();
+const radialShadowGeo = (() => {
+  const g = new THREE.PlaneGeometry(0.5, 1);
+  g.translate(0, 0.5, 0); // base at the feet, extends along +y
+  return g;
+})();
+function makeRadialShadows(): THREE.Object3D[] {
+  return lights.towers.map(() => {
+    const holder = new THREE.Object3D();
+    const plane = new THREE.Mesh(radialShadowGeo, radialShadowMat);
+    plane.rotation.x = -Math.PI / 2; // flat; its +y now runs along holder -z
+    plane.renderOrder = -1;
+    holder.add(plane);
+    scene.add(holder);
+    return holder;
+  });
+}
+
+function placeRadial(m: Model, px: number, pz: number, visible: boolean) {
+  if (!m.radial) return;
+  for (let k = 0; k < m.radial.length; k++) {
+    const t = lights.towers[k];
+    const dx = px - t.x, dz = pz - t.z;
+    const dist = Math.hypot(dx, dz);
+    const h = m.radial[k];
+    h.position.set(px, 0.012 + k * 0.001, pz);
+    h.rotation.y = Math.atan2(-dx, -dz);
+    // shadow length ~ body height x distance / (lamp height - body)
+    h.children[0].scale.set(1, Math.min(5, 1.82 * dist / 17), 1);
+    h.visible = visible;
+  }
+}
+
 // soft contact shadow shared by every character: even on 'low' (no shadow
 // maps) bodies stay GROUNDED — a figure without a contact patch floats
 const blobShadow = (() => {
@@ -469,6 +553,7 @@ function getModel(id: string, name: string, team: 'A' | 'B', keeper = false) {
       ? new CharModel(team, seed, keeper, { number: num, name })
       : new HumanRig(team === 'A' ? 0x2563eb : 0xdc2626, seed);
     rig.group.add(blobShadow());
+    rigIds.set(rig, id);
     scene.add(rig.group);
     const lb = label(name);
     lb.position.y = 2.15;
@@ -488,7 +573,7 @@ function getModel(id: string, name: string, team: 'A' | 'B', keeper = false) {
     ring.rotation.x = -Math.PI / 2;
     ring.position.y = 0.02;
     rig.group.add(ring);
-    m = { rig, label: lb, ring, ringMat, cursor };
+    m = { rig, label: lb, ring, ringMat, cursor, radial: tod === 'night' ? makeRadialShadows() : null, prevYaw: 0, yawRate: 0 };
     models.set(id, m);
   }
   return m;
@@ -603,6 +688,13 @@ function onMsg(m: any) {
         fx.goalBurst(Math.sign(ballVis.x) * (L / 2 - 0.6), Math.max(-2.5, Math.min(2.5, ballVis.z)));
         // the scoring side's end of the stadium erupts
         stadium.celebrate(m.team === 'A' ? 0 : 1);
+        // after the celebration beat, roll the replay (the rendered ball
+        // crosses the line one interpolation delay after this event)
+        {
+          const lastBall = snaps.length ? snaps[snaps.length - 1].s.ball.x : ballVis.x;
+          const tNow = performance.now();
+          pendingReplay = { at: tNow + 1800, goalAt: tNow + INTERP_MS, side: Math.sign(lastBall) || 1 };
+        }
         // the scorer wheels away arms wide; his teammates' arms go up
         const scorer = m.scorer as string | null;
         schedule(scorer === myId ? 0 : INTERP_MS, () => {
@@ -614,7 +706,11 @@ function onMsg(m: any) {
           }
         });
       }
-      if (m.kind === 'kickoff') { winner = null; banner('KICKOFF', 900); sfx.whistle('kickoff'); }
+      if (m.kind === 'kickoff') {
+        winner = null; banner('KICKOFF', 900); sfx.whistle('kickoff');
+        pendingReplay = null;
+        if (director.active && !director.hold) endReplay();
+      }
       if (m.kind === 'end') { winner = m.winner; sfx.whistle('full'); }
       if (m.kind === 'foul') banner('FOUL!', 1000);
       if (m.kind === 'restart') {
@@ -787,6 +883,99 @@ const teamOf = new Map<string, 'A' | 'B'>();
 let lastFrame = performance.now();
 let acc = 0;
 
+let replayPhase = -1;
+const replayCam = new THREE.Vector3();
+const replayLook = new THREE.Vector3();
+function endReplay() {
+  director.active = false;
+  setReplayUI(false);
+  camera.fov = BASE_FOV;
+  camera.updateProjectionMatrix();
+  for (const m of models.values()) m.rig.group.visible = true;
+}
+function renderReplay(dt: number) {
+  const [t0, t1] = director.advance(dt * 1000);
+  const f = recorder.sample(t1);
+  if (!f) { director.active = false; return; }
+  const slowDt = dt * director.speed;
+  // re-perform the techniques that were played in this slice of time
+  for (const a of recorder.actionsBetween(t0, t1)) {
+    const m = models.get(a.id);
+    if (!m || !('triggerAction' in m.rig)) continue;
+    const rig = m.rig as CharModel;
+    if (a.kind === 'dive') rig.triggerDive(a.arg ?? 1);
+    else if (a.kind === 'pickup') rig.triggerPickup();
+    else if (a.kind === 'punch') rig.triggerPunch();
+    else if (a.kind === 'arms') rig.triggerArms();
+    else rig.triggerAction(a.kind);
+  }
+  const inFrame = new Set<string>();
+  for (const b of f.bodies) {
+    const m = models.get(b.id);
+    if (!m) continue;
+    inFrame.add(b.id);
+    m.rig.group.visible = true;
+    m.rig.group.position.set(b.x, 0, b.z);
+    m.rig.group.rotation.y = -b.yaw;
+    let dy = b.yaw - m.prevYaw;
+    while (dy > Math.PI) dy -= Math.PI * 2;
+    while (dy < -Math.PI) dy += Math.PI * 2;
+    m.yawRate += ((slowDt > 0 ? dy / slowDt : 0) - m.yawRate) * (1 - Math.exp(-12 * dt));
+    m.prevYaw = b.yaw;
+    m.label.visible = false;
+    m.cursor.visible = false;
+    m.ringMat.opacity = 0;
+    placeRadial(m, b.x, b.z, true);
+    m.rig.update(slowDt, {
+      speed: b.spd, stamina: 1, yawRate: m.yawRate, shield: b.shield, sliding: b.sliding,
+      stunned: b.stunned, holding: b.holding, hasBall: b.hasBall,
+      ready: b.keeper && !b.holding && Math.hypot(f.bx - b.x, f.bz - b.z) < 11,
+      lookYaw: Math.atan2(f.bz - b.z, f.bx - b.x), bodyYaw: b.yaw,
+    } as any);
+  }
+  for (const [id, m] of models) if (!inFrame.has(id)) m.rig.group.visible = false;
+  // ball: recorded position, rolled by its recorded motion
+  const dxb = f.bx - ballVis.x, dzb = f.bz - ballVis.z;
+  const travel = Math.hypot(dxb, dzb);
+  ballVis.set(f.bx, f.by, f.bz);
+  ballMesh.position.copy(ballVis);
+  if (travel > 1e-4 && travel < 2) {
+    ballMesh.rotateOnWorldAxis(new THREE.Vector3(dzb / travel, 0, -dxb / travel), -travel / BALL.radius);
+  }
+  ballShadow.position.set(f.bx, 0.02, f.bz);
+  ballShadow.scale.setScalar(Math.max(0.3, 1 - (f.by - BALL.radius) / 8));
+  if (f.ref && refModel) {
+    refModel.group.position.set(f.ref.x, 0, f.ref.z);
+    refModel.group.rotation.y = -f.ref.yaw;
+    refModel.update(slowDt, { speed: f.ref.spd, stamina: 1, yawRate: 0, lookYaw: Math.atan2(f.bz - f.ref.z, f.bx - f.ref.x), bodyYaw: f.ref.yaw });
+  }
+  nets.update(slowDt, ballVis, BALL.radius);
+  fx.update(slowDt, f.bx, f.by, f.bz, slowDt > 0 ? travel / slowDt : 0);
+  stadium.update(dt, 1);
+
+  // two TV angles: a low tracking shot beside the play, then the reverse
+  // from behind the net as it bulges (hard cut between them, like TV)
+  const side = director.goalSide;
+  const phase = director.progress < 0.58 ? 0 : 1;
+  let cut = false;
+  if (phase !== replayPhase) { replayPhase = phase; cut = true; }
+  if (phase === 0) {
+    // higher and further back than a sideline photographer: nobody walks
+    // through the lens, the run and the finish both stay in frame
+    replayCam.set(f.bx - side * 7.5, 2.7, Math.min(W / 2 + 3.6, f.bz + 9.5));
+    replayLook.set(f.bx + side * 1.2, 0.7, f.bz);
+    camera.fov = 34;
+  } else {
+    replayCam.set(side * (L / 2 + 3.6), 1.5, Math.max(-1.3, Math.min(1.3, f.bz * 0.35)));
+    replayLook.set(f.bx - side * 1.6, 0.9, f.bz * 0.8);
+    camera.fov = 46;
+  }
+  if (cut) camera.position.copy(replayCam);
+  else camera.position.lerp(replayCam, 1 - Math.exp(-5 * dt));
+  camera.lookAt(replayLook);
+  camera.updateProjectionMatrix();
+}
+
 function frame() {
   const now = performance.now();
   const dtReal = Math.min(0.1, (now - lastFrame) / 1000);
@@ -804,6 +993,22 @@ function frame() {
       if (pending.length > 60) pending.shift();
       predictTick(inp);
     }
+  }
+
+  // GOAL REPLAY: after the celebration beat, the director takes over the
+  // render until the replay ends or the kickoff whistle goes
+  if (pendingReplay && now >= pendingReplay.at) {
+    director.begin(pendingReplay.goalAt, pendingReplay.side);
+    pendingReplay = null;
+    replayPhase = -1;
+    setReplayUI(true);
+  }
+  if (director.active) {
+    renderReplay(dtReal);
+    if (!director.active) endReplay();
+    draw(dtReal);
+    requestAnimationFrame(frame);
+    return;
   }
 
   const view = sample();
@@ -887,6 +1092,8 @@ function frame() {
     // players — bots encode their team in the id (bot-0-*, bot-1-*);
     // humans come from the cached lobby roster
     const seen = new Set<string>();
+    const bodies: { m: Model; x: number; z: number; yaw: number; spd: number }[] = [];
+    const recRows: RBody[] = [];
     for (const p of view.players) {
       seen.add(p.id);
       const isMe = p.id === myId;
@@ -923,6 +1130,17 @@ function frame() {
       if (isMe) { myVisX = px; myVisZ = pz; }
       m.rig.group.position.set(px, 0, pz);
       m.rig.group.rotation.y = -pyaw;
+      // yaw rate from the RENDERED heading: remote players lean into turns
+      // too (they used to be hard-coded upright)
+      {
+        let dy = pyaw - m.prevYaw;
+        while (dy > Math.PI) dy -= Math.PI * 2;
+        while (dy < -Math.PI) dy += Math.PI * 2;
+        const yr = dtReal > 0 ? dy / dtReal : 0;
+        m.yawRate += (yr - m.yawRate) * (1 - Math.exp(-12 * dtReal));
+        m.prevYaw = pyaw;
+      }
+      placeRadial(m, px, pz, !(camMode === 2 && isMe));
       m.rig.extraPitch = p.sliding ? -1.15 : p.stunned ? 0.35 : 0;
       // own name tag hides in the chase/first-person cams (it floats right
       // in front of the lens); everyone else's stays
@@ -933,7 +1151,7 @@ function frame() {
       if (m.cursor.visible) m.cursor.position.y = 2.25 + Math.sin(now / 180) * 0.05;
       m.rig.update(dtReal * animScale, {
         speed: spd,
-        yawRate: isMe && localMe ? localMe.yawRate : 0,
+        yawRate: isMe && localMe ? localMe.yawRate : m.yawRate,
         stamina: p.stamina,
         shield: p.shielding,
         sliding: p.sliding,
@@ -949,9 +1167,40 @@ function frame() {
       m.ringMat.opacity = charge > 0.02 ? 0.35 + 0.6 * charge : 0;
       m.ringMat.color.setHSL(0.15 - 0.15 * charge, 1, 0.55);
       m.rig.group.visible = !(camMode === 2 && isMe);
+      bodies.push({ m, x: px, z: pz, yaw: pyaw, spd });
+      recRows.push({
+        id: p.id, x: px, z: pz, yaw: pyaw, spd,
+        sliding: p.sliding, stunned: p.stunned, holding: !!p.holding, shield: p.shielding,
+        keeper: !!p.keeper, hasBall: view.latest.owner === p.id && !p.holding,
+      });
+    }
+    if (recorder.wants(now)) {
+      recorder.push({
+        t: now, bx: ballVis.x, by: ballVis.y, bz: ballVis.z, bodies: recRows,
+        ref: view.ref ? { x: view.ref.x, z: view.ref.z, yaw: view.ref.yaw, spd: view.ref.speed } : null,
+      });
+    }
+    // JOSTLE: bodies that meet at pace react — each leans away from the
+    // contact with an arm out (the shoulder-to-shoulder of every duel)
+    for (let i = 0; i < bodies.length; i++) {
+      for (let j = i + 1; j < bodies.length; j++) {
+        const a = bodies[i], b = bodies[j];
+        const dx = b.x - a.x, dz = b.z - a.z;
+        const d = Math.hypot(dx, dz);
+        if (d > 0.78 || d < 1e-3 || a.spd + b.spd < 2.2) continue;
+        const k = Math.min(1, (a.spd + b.spd) / 9);
+        // which side of each player is the other on? (+ = his right)
+        const side = (yaw: number, tx: number, tz: number) => Math.sign(-Math.sin(yaw) * tx + Math.cos(yaw) * tz) || 1;
+        if ('bump' in a.m.rig) (a.m.rig as CharModel).bump(-side(a.yaw, dx, dz), k);
+        if ('bump' in b.m.rig) (b.m.rig as CharModel).bump(-side(b.yaw, -dx, -dz), k);
+      }
     }
     for (const [id, m] of models) {
-      if (!seen.has(id)) { scene.remove(m.rig.group); models.delete(id); }
+      if (!seen.has(id)) {
+        scene.remove(m.rig.group);
+        m.radial?.forEach((h) => scene.remove(h));
+        models.delete(id);
+      }
     }
 
     // the referee — all-black official shadowing play (no label, no ring)

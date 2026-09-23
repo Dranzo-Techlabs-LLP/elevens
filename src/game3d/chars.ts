@@ -439,6 +439,9 @@ const _s = new THREE.Vector3();
 const _p = new THREE.Vector3();
 
 export class CharModel {
+  /** every action a character plays is reported here (the replay recorder
+   *  logs them so a replay re-performs the same techniques) */
+  static onAction: ((rig: CharModel, kind: string, arg?: number) => void) | null = null;
   group = new THREE.Group();
   /** kept for API-parity with HumanRig (unused — clips own the posture) */
   extraPitch = 0;
@@ -459,6 +462,10 @@ export class CharModel {
   private holdOverhead = 0; // throw-in taker: ball held above the head
   private touchTimer = 0.2;
   private leftFooted: boolean;
+  // shoulder contact: a short lean away from the other body
+  private bumpT = 0;
+  private bumpSide = 0;
+  private bumpK = 0;
   // procedural action in flight
   private act: { def: ActionDef; t: number } | null = null;
   // referee card ceremony
@@ -541,6 +548,7 @@ export class CharModel {
   triggerAction(kind: string) {
     const def = ACTIONS[kind];
     if (!def) return;
+    if (kind !== 'touch') CharModel.onAction?.(this, kind);
     this.act = { def, t: 0 };
     if (kind === 'header') this.playOneShot('leap', 0.55, 1.6);
     if (kind === 'throw') this.holdOverhead = 0;
@@ -583,25 +591,38 @@ export class CharModel {
     return true;
   }
 
+  /** shoulder-to-shoulder contact: lean away (side = -1 left, +1 right),
+   *  arm out for balance — the jostle you see in every duel */
+  bump(side: number, strength: number) {
+    if (this.bumpT > 0.15) return; // don't restart a reaction in flight
+    this.bumpT = 0.38;
+    this.bumpSide = side;
+    this.bumpK = Math.min(1, strength);
+  }
+
   /** keeper save / celebration: both arms thrown up for ~0.8s */
   triggerArms() {
     this.armsT = 0.8;
+    CharModel.onAction?.(this, 'arms');
   }
 
   /** keeper dive: the real Roll clip + body roll toward the ball side */
   triggerDive(side: number) {
     this.diveSide = side >= 0 ? 1 : -1;
+    CharModel.onAction?.(this, 'dive', this.diveSide);
     this.playOneShot('roll', 0.85, 1.35);
     this.diveT = 0.85; // pose roll composes over the clip — reads sideways
   }
 
   /** keeper gathering a ground ball into his gloves */
   triggerPickup() {
+    CharModel.onAction?.(this, 'pickup');
     if (!this.playOneShot('pickup', 0.9, 1.6)) this.triggerArms();
   }
 
   /** keeper parry: a real punch clip — fists the ball clear */
   triggerPunch() {
+    CharModel.onAction?.(this, 'punch');
     if (!this.playOneShot('punch', 0.6, 1.4)) this.triggerArms();
   }
 
@@ -804,10 +825,23 @@ export class CharModel {
       this.rotM('uarmR', 2, -2.6 * env);
     }
 
-    // ---- whole-body posing (pose group: forward = +X, rot.z + = lean back) ----
+    // jostle: arm out on the side away from the contact
+    let bumpLean = 0;
+    if (this.bumpT > 0) {
+      this.bumpT = Math.max(0, this.bumpT - dt);
+      const env = Math.sin((1 - this.bumpT / 0.38) * Math.PI) * this.bumpK;
+      bumpLean = this.bumpSide * 0.2 * env;
+      if (this.bumpSide > 0) this.rotM('uarmR', 2, -0.6 * env);
+      else this.rotM('uarmL', 2, 0.6 * env);
+    }
+
+    // ---- whole-body posing (pose group: forward = +X, rot.z + = lean back,
+    // rot.x + = lean to the player's RIGHT) ----
     const bankTarget = THREE.MathUtils.clamp(-s.yawRate * 0.05, -0.14, 0.14);
     this.bank += (bankTarget - this.bank) * (1 - Math.exp(-10 * dt));
-    this.pose.rotation.x = this.bank;
+    this.pose.rotation.x = this.bank + bumpLean;
+    // cutting hard at speed: the body sinks into the plant
+    drop -= 0.045 * Math.min(1, Math.abs(s.yawRate) / 3) * Math.min(1, sp / 5);
 
     // SLIDE TACKLE pose: body low and leaned back, leading leg out front,
     // trailing leg tucked — a proper ground slide, not a somersault

@@ -68,6 +68,8 @@ export interface MatchSnapshot {
 
 const L = PITCH_5S.length;
 const W = PITCH_5S.width;
+/** dead time after a goal: celebration + the broadcast replay */
+export const GOAL_PAUSE_S = 6.6;
 
 // Box geometry shared with the pitch markings (proportions of a 105x68
 // pitch scaled to ours) — the sim's penalty/goal-kick/keeper-hands rules
@@ -967,7 +969,8 @@ export class Match {
     this.score[team]++;
     this.kickoffTeam = (1 - team) as 0 | 1; // conceding side restarts
     this.phase = 'goal';
-    this.pauseUntil = this.tick + Math.round(2.2 * this.tickRate);
+    // celebration (~1.8s) + the slow-motion replay every client plays (~4.5s)
+    this.pauseUntil = this.tick + Math.round(GOAL_PAUSE_S * this.tickRate);
     // the scorer: last touch, if it was one of ours (an own goal credits
     // nobody on the scoring side)
     const by = this.lastTouch >= 0 && this.meta[this.lastTouch].team === team ? this.lastTouch : -1;

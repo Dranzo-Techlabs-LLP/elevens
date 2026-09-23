@@ -33,7 +33,7 @@ function netTexture(): THREE.CanvasTexture {
   const g = c.getContext('2d')!;
   g.clearRect(0, 0, 128, 128);
   g.strokeStyle = 'rgba(255,255,255,0.95)';
-  g.lineWidth = 5;
+  g.lineWidth = 3; // ~5mm twine at a 16cm mesh
   // diamond mesh, seamless on a 128 tile
   for (let k = -128; k <= 256; k += 64) {
     g.beginPath(); g.moveTo(k, 0); g.lineTo(k + 128, 128); g.stroke();
@@ -59,7 +59,7 @@ export class GoalNets {
     private gd: number,
   ) {
     const tex = netTexture();
-    const cell = 0.24; // one diamond tile per 24cm
+    const cell = 0.32; // one texture tile = two 16cm diamonds
     const mk = (
       goal: number, w: number, h: number, segW: number, segH: number,
       origin: THREE.Vector3, normal: THREE.Vector3, tu: THREE.Vector3, tv: THREE.Vector3,
